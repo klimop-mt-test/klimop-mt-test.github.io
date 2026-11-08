@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="nl-BE">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!--
+  MT · index.html · versie 0.1.0
+  Maximumfactuur-tool van GO! basisschool Klim-Op (Vilvoorde).
+  De opbouw van de pagina, zonder scriptcode: alle code staat in de modules (17.1, 17.10).
+  Scripts enkel van het eigen adres; verbindingen enkel met het eigen adres en Supabase.
+  Test en productie krijgen dezelfde bestanden: bij de livegang komt het adres van de productie
+  in connect-src erbij.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://ayszixqnuktogzjtreyy.supabase.co https://vmvxawjfryaijkhhnnyr.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="mt-versie" content="0.1.0">
+<title>Maximumfactuur · GO! basisschool Klim-Op</title>
+<link rel="stylesheet" href="mt.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+
+<p id="laden" class="mt-laden" role="status">De MT wordt geladen. Blijft dit staan, vernieuw dan de pagina met Ctrl+F5.</p>
+
+<div id="app" hidden>
+<header>
+  <div class="wrap">
+    <div class="head-row">
+      <div class="brand">
+        <img class="logo-img" src="logo.png" width="177" height="120" alt="GO! basisschool Klim-Op">
+        <div><h1>Maximumfactuur</h1><p>GO! basisschool Klim-Op · Vilvoorde</p></div>
+      </div>
+      <div class="status">
+        <span id="omgeving" class="mt-omgeving" hidden></span>
+        <button id="conn" class="conn busy" type="button" title="De MT controleert de verbinding." aria-label="De MT controleert de verbinding."><span class="dot"></span><span id="connTxt">verbinden…</span></button>
+      </div>
+    </div>
+    <div class="stripe"></div>
+  </div>
+</header>
+
+<main>
+<section class="view active" id="view-start" aria-labelledby="startTitel">
+  <div class="page-head big">
+    <div>
+      <h2 id="startTitel">De MT is in opbouw</h2>
+      <p>Deze testversie toont nog geen schermen. Ze controleert of alle bestanden dezelfde versie hebben, en of de databank bereikbaar is.</p>
+    </div>
+  </div>
+  <div class="card mt-stand">
+    <dl>
+      <div class="rij"><dt>Versie</dt><dd id="standVersie" class="num">–</dd></div>
+      <div class="rij"><dt>Omgeving</dt><dd id="standOmgeving">–</dd></div>
+      <div class="rij"><dt>Databank</dt><dd id="standDatabank">–</dd></div>
+    </dl>
+  </div>
+</section>
+</main>
+</div>
+
+</body>
+</html>
