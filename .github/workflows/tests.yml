@@ -1,0 +1,37 @@
+# MT · de automatische tests (17.1, 17.12)
+# Bij elke upload: de vijf regels, de versies, de CSP, de SQL-regels en geen geheimen.
+# Alles twee keer: in UTC, zoals de serverfunctie, en in de tijd van Brussel, zoals de browser.
+# De uitkomst staat als vinkje of kruisje bij de upload, en onder het tabblad Actions.
+
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests (${{ matrix.tijdzone }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        tijdzone: [UTC, Europe/Brussels]
+    steps:
+      - name: De code ophalen
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Deno klaarzetten
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.9.6
+      - name: De tests draaien
+        env:
+          TZ: ${{ matrix.tijdzone }}
+        run: deno test --allow-read --no-prompt tests/
