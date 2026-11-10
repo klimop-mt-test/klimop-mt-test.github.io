@@ -2,7 +2,7 @@
 // Roept de pingfunctie op van elk project in config.js (17.9). Drie pogingen per project.
 // Enkel de publishable key, enkel als apikey: nooit een secret key in een workflow.
 
-import { alleOmgevingen } from "../config.js";
+import { alleOmgevingen } from "../code/config.js";
 
 const POGINGEN = 3;
 const PAUZE = 30_000;
