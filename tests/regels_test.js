@@ -3,15 +3,15 @@
 // Regel 1 en 2 gelden zodra rekenen.js en adapter.js bestaan (stap 3); tot dan staan ze op "ignored".
 
 import assert from "node:assert/strict";
-import { alleTekstbestanden, bestaat, lees, paginaModules, sqlScripts, sqlZonderCommentaar } from "./hulp.js";
+import { alleTekstbestanden, bestaat, CODE, lees, naamVan, paginaModules, sqlScripts, sqlZonderCommentaar } from "./hulp.js";
 
 // ---------- Regel 1: rekenen.js ----------
 
 Deno.test({
   name: "regel 1: rekenen.js importeert niets, en kent geen scherm, netwerk, browseropslag of klok",
-  ignore: !bestaat("rekenen.js"),
+  ignore: !bestaat(CODE + "rekenen.js"),
   fn() {
-    const code = lees("rekenen.js");
+    const code = lees(CODE + "rekenen.js");
     assert.doesNotMatch(code, /^\s*import\b/m, "rekenen.js importeert iets");
     assert.doesNotMatch(code, /\bimport\s*\(/, "rekenen.js laadt iets dynamisch");
     for (const verboden of ["window", "document", "fetch", "localStorage", "sessionStorage", "navigator", "XMLHttpRequest", "Deno"]) {
@@ -25,9 +25,9 @@ Deno.test({
 
 Deno.test({
   name: "regel 2: adapter.js gebruikt enkel fetch, en laadt nooit code van de uitstappentool",
-  ignore: !bestaat("adapter.js"),
+  ignore: !bestaat(CODE + "adapter.js"),
   fn() {
-    const code = lees("adapter.js");
+    const code = lees(CODE + "adapter.js");
     assert.doesNotMatch(code, /\bimport\s*\(/, "adapter.js laadt code dynamisch");
     assert.doesNotMatch(code, /from\s+["']https?:/, "adapter.js importeert code van een ander adres");
     assert.doesNotMatch(code, /\beval\s*\(|new\s+Function\s*\(/, "adapter.js voert tekst uit als code");
@@ -41,17 +41,17 @@ Deno.test({
 // ---------- Regel 3: enkel data.js praat met de databank ----------
 
 Deno.test("regel 3: enkel config.js kent de adressen van Supabase", () => {
-  for (const naam of paginaModules()) {
-    if (naam === "config.js") continue;
-    assert.doesNotMatch(lees(naam), /supabase\.co/, naam + " bevat een adres van Supabase");
+  for (const pad of paginaModules()) {
+    if (naamVan(pad) === "config.js") continue;
+    assert.doesNotMatch(lees(pad), /supabase\.co/, pad + " bevat een adres van Supabase");
   }
 });
 
 Deno.test("regel 3: enkel data.js, adapter.js en app.js gebruiken fetch", () => {
   const mag = new Set(["data.js", "adapter.js", "app.js"]);
-  for (const naam of paginaModules()) {
-    if (mag.has(naam)) continue;
-    assert.doesNotMatch(lees(naam), /\bfetch\s*\(/, naam + " gebruikt fetch");
+  for (const pad of paginaModules()) {
+    if (mag.has(naamVan(pad))) continue;
+    assert.doesNotMatch(lees(pad), /\bfetch\s*\(/, pad + " gebruikt fetch");
   }
 });
 
@@ -60,24 +60,24 @@ Deno.test("regel 3: enkel data.js, adapter.js en app.js gebruiken fetch", () => 
 const HTML_SCHRIJVEN = /\b(innerHTML|outerHTML|insertAdjacentHTML|createContextualFragment|srcdoc)\b|document\.write|\bDOMParser\b/;
 
 Deno.test("regel 4: enkel ui.js schrijft HTML in de pagina", () => {
-  for (const naam of paginaModules()) {
-    if (naam === "ui.js") continue;
-    assert.doesNotMatch(lees(naam), HTML_SCHRIJVEN, naam + " schrijft HTML");
+  for (const pad of paginaModules()) {
+    if (naamVan(pad) === "ui.js") continue;
+    assert.doesNotMatch(lees(pad), HTML_SCHRIJVEN, pad + " schrijft HTML");
   }
 });
 
 Deno.test("regel 4: ui.js schrijft HTML op één plaats, in zet()", () => {
-  const code = lees("ui.js");
+  const code = lees(CODE + "ui.js");
   const plaatsen = code.match(/\binnerHTML\b/g) || [];
   assert.equal(plaatsen.length, 1, "ui.js gebruikt innerHTML op " + plaatsen.length + " plaatsen");
   assert.doesNotMatch(code, /\b(outerHTML|insertAdjacentHTML|createContextualFragment)\b|document\.write/);
 });
 
 Deno.test("regel 4: geen acties of javascript: in de opmaak", () => {
-  for (const naam of ["index.html", ...paginaModules()]) {
-    const tekst = lees(naam);
-    assert.doesNotMatch(tekst, /<[a-z][^>]*\son[a-z]+\s*=/i, naam + " zet een actie in een HTML-attribuut");
-    assert.doesNotMatch(tekst, /javascript:/i, naam + " bevat javascript:");
+  for (const pad of ["index.html", ...paginaModules()]) {
+    const tekst = lees(pad);
+    assert.doesNotMatch(tekst, /<[a-z][^>]*\son[a-z]+\s*=/i, pad + " zet een actie in een HTML-attribuut");
+    assert.doesNotMatch(tekst, /javascript:/i, pad + " bevat javascript:");
   }
 });
 

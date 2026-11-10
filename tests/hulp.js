@@ -17,13 +17,22 @@ export function bestaat(pad) {
   }
 }
 
-/** De modules van de pagina: alle .js-bestanden in de hoofdmap. */
+/** De map met de modules van de pagina, en de map met de opmaak (B206). */
+export const CODE = "code/";
+export const OPMAAK = "opmaak/";
+
+/** De modules van de pagina: alle .js-bestanden in code/, met hun pad. */
 export function paginaModules() {
-  const namen = [];
-  for (const item of Deno.readDirSync(MAP)) {
-    if (item.isFile && item.name.endsWith(".js")) namen.push(item.name);
+  const paden = [];
+  for (const item of Deno.readDirSync(new URL(CODE, MAP))) {
+    if (item.isFile && item.name.endsWith(".js")) paden.push(CODE + item.name);
   }
-  return namen.sort();
+  return paden.sort();
+}
+
+/** De naam zonder map: code/app.js wordt app.js. */
+export function naamVan(pad) {
+  return pad.slice(pad.lastIndexOf("/") + 1);
 }
 
 /** Alle tekstbestanden van de repository, met hun pad, zonder .git en zonder beelden of lettertypes. */

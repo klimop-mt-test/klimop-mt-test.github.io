@@ -2,7 +2,7 @@
 // Het sjabloon html`…` van ui.js zet elke ingevoegde waarde om naar tekst (regel 4, 17.10).
 
 import assert from "node:assert/strict";
-import { esc, html } from "../ui.js";
+import { esc, html } from "../code/ui.js";
 
 Deno.test("esc zet de vijf gevaarlijke tekens om", () => {
   assert.equal(esc(`<a href="x" title='y'>&</a>`), "&lt;a href=&quot;x&quot; title=&#39;y&#39;&gt;&amp;&lt;/a&gt;");

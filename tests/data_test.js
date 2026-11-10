@@ -3,7 +3,7 @@
 // fetch wordt nagebootst; er gaat niets over het netwerk.
 
 import assert from "node:assert/strict";
-import { ping, redenVoor, stel } from "../data.js";
+import { ping, redenVoor, stel } from "../code/data.js";
 
 const PROJECT = { mt: { url: "https://voorbeeldvoorbeeldvoorb.supabase.co", sleutel: "sb_publishable_voorbeeld" } };
 

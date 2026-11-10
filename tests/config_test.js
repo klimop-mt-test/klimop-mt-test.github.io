@@ -2,7 +2,7 @@
 // De omgeving volgt uit het adres; een onbekend adres start niet (17.1). Enkel publishable keys.
 
 import assert from "node:assert/strict";
-import { alleOmgevingen, omgeving, UITSTAPPENTOOL } from "../config.js";
+import { alleOmgevingen, omgeving, UITSTAPPENTOOL } from "../code/config.js";
 
 Deno.test("het testadres geeft de testomgeving", () => {
   const o = omgeving("klimop-mt-test.github.io");
