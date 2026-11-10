@@ -1,12 +1,12 @@
 /* ============================================================
-   MT · mt.css · versie 0.1.1
+   MT · mt.css · versie 0.2.0
    Maximumfactuur-tool van GO! basisschool Klim-Op (Vilvoorde).
    De tokens, de basis-CSS en de componenten van template 1.7, met de zandwereld,
    ongewijzigd overgenomen (design system 1.14). Daaronder de aanvullingen voor de MT.
    ============================================================ */
 
 /* De versie van dit bestand: app.js vergelijkt ze met de andere bestanden (17.1). */
-:root{--mt-versie:"0.1.1"}
+:root{--mt-versie:"0.2.0"}
 
 /* Outfit uit de eigen repository, niet via Google Fonts (B158). Licentie: OFL-outfit.txt. */
 @font-face{font-family:'Outfit';font-style:normal;font-display:swap;font-weight:100 900;

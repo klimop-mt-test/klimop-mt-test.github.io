@@ -1,4 +1,4 @@
-// MT · config.js · versie 0.1.1
+// MT · config.js · versie 0.2.0
 // De adressen en sleutels per omgeving (17.1). De omgeving, test of productie, volgt uit het adres
 // van de pagina; een onbekend adres start niet.
 //
@@ -6,7 +6,7 @@
 // apikey mee (design system 1.13). Nooit een secret key (sb_secret_…) of een oude sleutel (eyJ…)
 // in dit bestand of elders in de repository: een test bewaakt dat.
 
-export const VERSIE = "0.1.1";
+export const VERSIE = "0.2.0";
 
 /** De MT per adres van de pagina. De productie komt erbij bij de livegang. */
 const OMGEVINGEN = Object.freeze({

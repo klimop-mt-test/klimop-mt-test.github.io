@@ -1,13 +1,29 @@
--- MT · sql/001_basis.sql · versie 0.1.0
+-- MT · sql/001_basis.sql · versie 0.2.0
 -- De basis van de databank (stap 0): het afgeschermde schema, de standaardrechten en de pingfunctie.
 --
 -- Zo voer je het uit: Supabase → project mt-test → SQL Editor → New query → dit hele bestand
 -- plakken → Run. Onderaan verschijnt een kleine tabel: elke regel moet OK tonen.
 --
--- Enkel toevoegend en herhaalbaar: opnieuw uitvoeren mag. Alles-of-niets: lukt een controle niet,
+-- Enkel toevoegend en herhaalbaar: opnieuw uitvoeren mag, zolang er geen later script uitgevoerd is
+-- (sinds 0.2.0: een ouder script zou de rechten van een later script terugzetten). Alles-of-niets: lukt een controle niet,
 -- dan wordt niets bewaard en toont de editor een fout die begint met "MT 001" (17.12).
 
 begin;
+
+-- 0. Niet opnieuw na een later script: dit script zou diens rechten op het schema terugzetten.
+--    Het scriptregister bestaat sinds 002.
+do $$
+declare
+  v_laatste integer;
+begin
+  if to_regclass('mt_intern.scripts') is not null then
+    execute 'select max(nummer) from mt_intern.scripts' into v_laatste;
+    if v_laatste > 1 then
+      raise exception 'MT 001: script % is al uitgevoerd. Voer 001 niet opnieuw uit.', v_laatste;
+    end if;
+  end if;
+end
+$$;
 
 -- 1. Het afgeschermde schema (17.3, regel 5). Niet bereikbaar via de Data API, die enkel public
 --    openstelt. De hulpfuncties van stap 1 komen hier.
