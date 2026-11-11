@@ -8,13 +8,19 @@
 //   4. elk ouder script nog eens: dat moet geweigerd worden, want het zou rechten terugzetten;
 //   5. tests/databank/proef.sql, in UTC en in de tijd van Brussel.
 //
+// Daarna, in een tweede test: de bewust ingebouwde fouten van tests/databank/fouten.js. Een controle
+// bewijst pas iets als ze ook afgaat wanneer het misloopt. Elke fout wordt apart in haar SQL-script
+// gezet, op een eigen kopie van de nagebootste Supabase; de controle van het script of de proef moet
+// ze vinden.
+//
 // Draait enkel met MT_DATABANK=1 en de nodige rechten:
 //   MT_DATABANK=1 deno test --allow-read --allow-write --allow-env --allow-run --no-prompt tests/databank_test.js
 // Zonder die instelling staat de test op "ignored", zodat de gewone tests niets extra vragen.
 // MT_PG_BIN wijst naar de map met initdb, pg_ctl en psql; anders zoekt de test in /usr/lib/postgresql.
 
 import assert from "node:assert/strict";
-import { MAP, sqlScripts } from "./hulp.js";
+import { FOUTEN } from "./databank/fouten.js";
+import { lees, MAP, sqlScripts } from "./hulp.js";
 
 function instelling(naam) {
   try {
@@ -26,6 +32,7 @@ function instelling(naam) {
 
 const AAN = instelling("MT_DATABANK") === "1";
 const POORT = "54329";
+const POORT_FOUTEN = "54331";
 
 /** De map met de programma's van Postgres: de hoogste versie die er staat. */
 function zoekPostgres() {
@@ -114,6 +121,82 @@ Deno.test({
         assert.equal(r.code, 0, "de proef mislukte in " + tijdzone + ":\n" + r.uit + "\n" + r.fout);
         assert.match(r.uit, /\|\s+0\s*$/m, "de proef telt mislukte controles in " + tijdzone + ":\n" + r.uit);
       }
+    } finally {
+      await doe(bin + "/pg_ctl", ["-D", gegevens, "-m", "immediate", "stop"], { stil: true });
+      await Deno.remove(map, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name: "fouten: elke bewust ingebouwde fout wordt gevonden, door de controle van het script of door de proef",
+  ignore: !AAN,
+  async fn() {
+    const bin = zoekPostgres();
+    assert.ok(bin, "geen Postgres gevonden: zet MT_PG_BIN op de map met initdb, pg_ctl en psql");
+    const scripts = sqlScripts();
+    const map = await Deno.makeTempDir({ prefix: "mt-pgf-" });
+    const gegevens = map + "/gegevens";
+    const psql = (gebruiker, databank, args) =>
+      doe(bin + "/psql", ["-X", "-q", "-v", "ON_ERROR_STOP=1", "-h", map, "-p", POORT_FOUTEN, "-U", gebruiker, "-d", databank, ...args], {
+        env: { PGTZ: "UTC", PGOPTIONS: "-c client_min_messages=warning" },
+      });
+    const lukt = (r, wat) => assert.equal(r.code, 0, wat + " mislukte:\n" + r.fout + "\n" + r.uit);
+    const nietGevonden = [];
+    const gevondenDoor = { "het script": 0, "een later script": 0, "de proef": 0 };
+
+    try {
+      lukt(await doe(bin + "/initdb", ["-D", gegevens, "-U", "supabase_admin", "-A", "trust", "-E", "UTF8", "--locale=C.UTF-8"]), "initdb");
+      const start = await doe(
+        bin + "/pg_ctl",
+        ["-D", gegevens, "-w", "-l", map + "/log", "-o", `-p ${POORT_FOUTEN} -c listen_addresses='' -c unix_socket_directories='${map}'`, "start"],
+        { stil: true },
+      );
+      assert.equal(start.code, 0, "Postgres start niet: zie " + map + "/log");
+      lukt(await psql("supabase_admin", "postgres", ["-f", pad("tests/databank/supabase.sql")]), "tests/databank/supabase.sql");
+
+      // Per script: eerst een sjabloon met alles wat ervoor komt, dan elke fout op een eigen kopie,
+      // en pas daarna het script zelf, zonder fout, voor wat volgt.
+      for (const [i, script] of scripts.entries()) {
+        const fouten = FOUTEN.filter((f) => "sql/" + f.script === script);
+        if (fouten.length) {
+          const sjabloon = "sjabloon" + i;
+          lukt(await psql("supabase_admin", "template1", ["-c", `create database ${sjabloon} template postgres`]), "het sjabloon");
+          const bron = lees(script);
+          for (const [n, f] of fouten.entries()) {
+            const databank = "fout" + i + "_" + n;
+            lukt(await psql("supabase_admin", "template1", ["-c", `create database ${databank} template ${sjabloon}`]), "de kopie voor een fout");
+            const bestand = map + "/" + databank + ".sql";
+            await Deno.writeTextFile(bestand, bron.replace(f.oud, () => f.nieuw));
+
+            let door = null;
+            const r = await psql("postgres", databank, ["-f", bestand]);
+            if (r.code !== 0) {
+              // Het script moet afbreken op zijn eigen controle, niet op een tikfout in de ingebouwde fout.
+              assert.match(r.fout, /MT \d{3}:/, f.naam + ": het script brak af, maar niet op zijn eigen controle:\n" + r.fout);
+              door = "het script";
+            } else {
+              for (const later of scripts.slice(i + 1)) {
+                if ((await psql("postgres", databank, ["-f", pad(later)])).code !== 0) door = "een later script";
+              }
+              if (!door) {
+                const p = await psql("supabase_admin", databank, ["-f", pad("tests/databank/proef.sql")]);
+                if (p.code !== 0 || !/\|\s+0\s*$/m.test(p.uit)) door = "de proef";
+              }
+            }
+            if (door) gevondenDoor[door]++;
+            else nietGevonden.push(f.naam);
+            lukt(await psql("supabase_admin", "template1", ["-c", `drop database ${databank}`]), "opruimen");
+          }
+        }
+        lukt(await psql("postgres", "postgres", ["-f", pad(script)]), script);
+      }
+
+      console.log(
+        FOUTEN.length + " fouten ingebouwd; gevonden door het script: " + gevondenDoor["het script"] +
+          ", door een later script: " + gevondenDoor["een later script"] + ", door de proef: " + gevondenDoor["de proef"],
+      );
+      assert.deepEqual(nietGevonden, [], "niet gevonden: " + nietGevonden.join("; "));
     } finally {
       await doe(bin + "/pg_ctl", ["-D", gegevens, "-m", "immediate", "stop"], { stil: true });
       await Deno.remove(map, { recursive: true });

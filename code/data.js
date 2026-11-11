@@ -1,11 +1,11 @@
-// MT · data.js · versie 0.2.0
+// MT · data.js · versie 0.3.0
 // De verbinding met de eigen databank (17.1, 17.8). De schermen praten enkel via dit bestand met
 // Supabase (regel 3). De publishable key gaat enkel als apikey mee; Authorization enkel met het
 // toegangsbewijs van een aangemelde gebruiker (design system 1.13).
 // Later komen hier de paginering, de databankfuncties en de serverfuncties, en de regel dat
 // "geen rechten" nooit "geen gegevens" betekent (17.3).
 
-export const VERSIE = "0.2.0";
+export const VERSIE = "0.3.0";
 
 /** Zoals de REST-laag van de andere tools: na 12 seconden zonder antwoord is het een fout. */
 const WACHTTIJD = 12000;

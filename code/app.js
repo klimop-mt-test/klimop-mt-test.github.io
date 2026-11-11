@@ -1,4 +1,4 @@
-// MT · app.js · versie 0.2.0
+// MT · app.js · versie 0.3.0
 // De start (17.1): nooit in een andere pagina, dezelfde versie in alle bestanden, de omgeving uit
 // het adres, en de verbinding met de databank. Later ook de tabbladen en de keuzebalk scherp of
 // minder scherp (B75).
@@ -8,7 +8,7 @@
 // die tot tien minuten toe), dan haalt de MT de bestanden één keer vers op en herlaadt. Lukt dat
 // niet, dan start ze niet en zegt ze wat je kan doen.
 
-export const VERSIE = "0.2.0";
+export const VERSIE = "0.3.0";
 
 /** De bestanden die de MT laadt. Elk heeft export const VERSIE; een test bewaakt deze lijst. */
 const MODULES = ["./config.js", "./ui.js", "./data.js"];
