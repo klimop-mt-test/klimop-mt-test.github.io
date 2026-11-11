@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <!--
-  MT · index.html · versie 0.3.0
+  MT · index.html · versie 0.4.0
   Maximumfactuur-tool van GO! basisschool Klim-Op (Vilvoorde).
   De opbouw van de pagina, zonder scriptcode: alle code staat in de modules (17.1, 17.10).
   Scripts enkel van het eigen adres; verbindingen enkel met het eigen adres en Supabase.
@@ -14,9 +14,12 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://ayszixqnuktogzjtreyy.supabase.co https://vmvxawjfryaijkhhnnyr.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex, nofollow">
-<meta name="mt-versie" content="0.3.0">
+<meta name="mt-versie" content="0.4.0">
 <title>Maximumfactuur · GO! basisschool Klim-Op</title>
 <link rel="stylesheet" href="opmaak/mt.css">
+<!-- supabase-js 2.116.0, het officiële bestand, uit de eigen repository (B158). Enkel auth.js gebruikt het.
+     De browser weigert het als het ook maar één teken afwijkt (integrity); een test bewaakt dezelfde controlesom. -->
+<script src="code/lib/supabase-2.116.0.js" integrity="sha384-iLddHTLokph6Omwoyid4XKxHaWa6w41BnoEj0q5oOrzmYPpHIKt1wyjReA7s//pP" defer></script>
 <script type="module" src="code/app.js"></script>
 </head>
 <body>
@@ -34,6 +37,8 @@
       <div class="status">
         <span id="omgeving" class="mt-omgeving" hidden></span>
         <button id="conn" class="conn busy" type="button" title="De MT controleert de verbinding." aria-label="De MT controleert de verbinding."><span class="dot"></span><span id="connTxt">verbinden…</span></button>
+        <span id="nietAangemeld" class="mt-niet">Niet aangemeld</span>
+        <button id="wie" class="admin-toggle on" type="button" hidden></button>
       </div>
     </div>
     <div class="stripe"></div>
@@ -41,15 +46,37 @@
 </header>
 
 <main>
-<section class="view active" id="view-start" aria-labelledby="startTitel">
+<section class="view active" id="view-aanmelden" aria-label="Aanmelden">
+  <div class="mt-login-wrap">
+    <div class="card mt-login" id="aanmeldKaart"></div>
+    <aside class="mt-login-aside">
+      <div class="card">
+        <h3>Waarom twee stappen?</h3>
+        <p>In deze tool staan namen van kinderen. Wie alleen je wachtwoord kent, komt er niet in: daarvoor is ook de code uit de app op je gsm nodig.</p>
+        <p>Google Authenticator en Microsoft Authenticator zijn gratis. Er gaan geen sms'en of mails uit, en de app heeft geen internet nodig om de code te tonen.</p>
+      </div>
+      <div class="card">
+        <h3>De eerste keer</h3>
+        <p>Tijdelijk wachtwoord, eigen wachtwoord kiezen, app koppelen, code. Daarna enkel nog wachtwoord en code.</p>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<section class="view" id="view-start" aria-labelledby="startTitel">
   <div class="page-head big">
     <div>
-      <h2 id="startTitel">De MT is in opbouw</h2>
-      <p>Deze testversie toont nog geen schermen. Ze controleert of alle bestanden dezelfde versie hebben, en of de databank bereikbaar is.</p>
+      <h2 id="startTitel">Je bent aangemeld</h2>
+      <p>De MT is in opbouw: deze testversie toont na het aanmelden nog geen schermen. Je ziet hier wie je bent, en wanneer de MT je afmeldt.</p>
     </div>
   </div>
+  <p id="startMelding" class="finfo mt-melding" hidden></p>
   <div class="card mt-stand">
     <dl>
+      <div class="rij"><dt>Aangemeld als</dt><dd id="standNaam">–</dd></div>
+      <div class="rij"><dt>Rol</dt><dd id="standRol">–</dd></div>
+      <div class="rij" id="rijKlassen" hidden><dt>Klassen</dt><dd id="standKlassen">–</dd></div>
+      <div class="rij"><dt>Afmelden</dt><dd id="standAfmelden">–</dd></div>
       <div class="rij"><dt>Versie</dt><dd id="standVersie" class="num">–</dd></div>
       <div class="rij"><dt>Omgeving</dt><dd id="standOmgeving">–</dd></div>
       <div class="rij"><dt>Databank</dt><dd id="standDatabank">–</dd></div>

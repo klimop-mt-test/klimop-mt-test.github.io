@@ -67,11 +67,29 @@ function csp() {
   return regels;
 }
 
-Deno.test("index.html bevat geen scriptcode: enkel code/app.js, als module", () => {
+/** supabase-js in de eigen repository (B158): het officiële bestand uit het npm-pakket, op één vaste versie. */
+const BIBLIOTHEEK = "code/lib/supabase-2.116.0.js";
+const BIBLIOTHEEK_SHA256 = "84ee9bf45695c1dd3ba1595b6bcfb0f09672434631351ffc8ebe9140545d5ff6";
+
+async function som(pad, soort) {
+  const bytes = Deno.readFileSync(new URL("../" + pad, import.meta.url));
+  return new Uint8Array(await crypto.subtle.digest(soort, bytes));
+}
+
+Deno.test("index.html bevat geen scriptcode: enkel supabase-js uit de eigen repository en code/app.js", () => {
   const scripts = [...htmlTekst.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)];
-  assert.equal(scripts.length, 1, "index.html heeft " + scripts.length + " scripts");
-  assert.match(scripts[0][0], /^<script type="module" src="code\/app\.js"><\/script>$/);
-  assert.equal(scripts[0][1].trim(), "", "het script in index.html bevat code");
+  assert.equal(scripts.length, 2, "index.html heeft " + scripts.length + " scripts");
+  assert.match(scripts[0][0], new RegExp('^<script src="' + metPunten(BIBLIOTHEEK) + '" integrity="sha384-[A-Za-z0-9+/=]+" defer><\\/script>$'));
+  assert.match(scripts[1][0], /^<script type="module" src="code\/app\.js"><\/script>$/);
+  for (const script of scripts) assert.equal(script[1].trim(), "", "een script in index.html bevat code");
+});
+
+Deno.test("supabase-js is het officiële bestand van versie 2.116.0, en de browser bewaakt dezelfde controlesom", async () => {
+  const hex = [...await som(BIBLIOTHEEK, "SHA-256")].map((b) => b.toString(16).padStart(2, "0")).join("");
+  assert.equal(hex, BIBLIOTHEEK_SHA256, BIBLIOTHEEK + " is gewijzigd: het is niet meer het bestand dist/umd/supabase.js uit @supabase/supabase-js@2.116.0");
+  const sha384 = btoa(String.fromCharCode(...await som(BIBLIOTHEEK, "SHA-384")));
+  assert.ok(htmlTekst.includes('integrity="sha384-' + sha384 + '"'), "de controlesom in index.html klopt niet met " + BIBLIOTHEEK);
+  assert.ok(bestaat("code/lib/LICENSE-supabase-js.txt"), "de licentie van supabase-js ontbreekt");
 });
 
 Deno.test("index.html verwijst enkel naar bestanden die bestaan", () => {

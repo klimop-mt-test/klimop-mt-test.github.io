@@ -1,12 +1,12 @@
-// MT · ui.js · versie 0.3.0
+// MT · ui.js · versie 0.4.0
 // De gedeelde onderdelen van de schermen (17.1). Het enige bestand dat HTML in de pagina zet
 // (regel 4, 17.10). Een scherm stelt zijn opbouw samen met het sjabloon html`…`: elke ingevoegde
 // waarde wordt daarin standaard tekst, zodat een naam nooit als opmaak op het scherm komt. Enkel
 // zet() hieronder schrijft die opbouw weg. Wat geen sjabloon is, wordt altijd gewone tekst.
-// Later komen hier ook de statuslabels, het ballonnetje van de materialentool, de filterbalk,
-// tabellen, vensters en meldingen, en het tonen van bedragen en datums.
+// Sinds stap 2 ook de onderdelen van de pagina en wie aangemeld is. Later komen hier de statuslabels,
+// het ballonnetje van de materialentool, de filterbalk, tabellen, vensters en meldingen, en bedragen.
 
-export const VERSIE = "0.3.0";
+export const VERSIE = "0.4.0";
 
 // ---------- Tekst en opmaak ----------
 
@@ -54,11 +54,11 @@ export function zet(element, inhoud) {
   else element.textContent = inhoud === null || inhoud === undefined ? "" : String(inhoud);
 }
 
-// ---------- De start en de verbindingsbol ----------
+// ---------- De pagina, de onderdelen en de hoofding ----------
 
 const $ = (id) => document.getElementById(id);
 
-/** Toont de MT na een geslaagde start. Stap 0: de pagina "in opbouw". */
+/** Toont de MT na een geslaagde start: de hoofding, met de versie en de omgeving. */
 export function toonStart({ versie, omgeving }) {
   $("standVersie").textContent = versie;
   $("standOmgeving").textContent = omgeving.label;
@@ -67,6 +67,58 @@ export function toonStart({ versie, omgeving }) {
   label.hidden = omgeving.naam === "productie";
   $("laden").hidden = true;
   $("app").hidden = false;
+}
+
+/** Toont één onderdeel van de pagina (view-…), en verbergt de andere. */
+export function toon(naam) {
+  for (const deel of document.querySelectorAll("main .view")) deel.classList.toggle("active", deel.id === "view-" + naam);
+  window.scrollTo(0, 0);
+}
+
+/** Wie aangemeld is, rechts in de hoofding. De knop meldt af; zonder naam staat er "Niet aangemeld". */
+export function zetGebruiker(tekst, opAfmelden) {
+  const knop = $("wie");
+  $("nietAangemeld").hidden = Boolean(tekst);
+  knop.hidden = !tekst;
+  knop.textContent = tekst ? tekst + " · afmelden" : "";
+  knop.onclick = tekst && opAfmelden ? opAfmelden : null;
+}
+
+const ROLLEN = { beheerder: "beheerder", leerkracht: "leerkracht", lezer: "lezer" };
+
+/** Een datum en uur voluit, in de tijd van Brussel: "dinsdag 24 november 2026 om 09:15". */
+export function datumEnUur(ms) {
+  const d = new Date(ms);
+  const dag = d.toLocaleDateString("nl-BE", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "Europe/Brussels" });
+  const uur = d.toLocaleTimeString("nl-BE", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Brussels" });
+  return dag + " om " + uur;
+}
+
+/**
+ * De pagina na het aanmelden (stap 2): wie je bent, je rol en je klassen, en wanneer de MT je afmeldt.
+ * De schermen zelf volgen in de volgende stappen.
+ */
+export function toonAccount({ account, blijft, codeOp, melding }) {
+  const instellingen = account.instellingen || {};
+  $("startTitel").textContent = "Dag " + account.naam;
+  $("standNaam").textContent = account.naam + " · " + account.email;
+  $("standRol").textContent = ROLLEN[account.rol] || account.rol;
+  const klassen = Array.isArray(account.klassen) ? account.klassen.map((k) => k.naam) : [];
+  $("rijKlassen").hidden = account.rol !== "leerkracht";
+  $("standKlassen").textContent = klassen.length
+    ? klassen.join(", ") + (account.schooljaar ? " (" + account.schooljaar + ")" : "")
+    : "nog geen klassen" + (account.schooljaar ? " in " + account.schooljaar : ": er is nog geen lopend schooljaar");
+  let afmelden = "na " + instellingen.afmelden_na_minuten + " minuten zonder activiteit, of als je dit tabblad sluit";
+  if (blijft) {
+    afmelden = "je blijft aangemeld op dit toestel";
+    if (codeOp && instellingen.code_geldig_dagen) {
+      afmelden += "; de MT vraagt de code uit je app opnieuw op " + datumEnUur(codeOp + instellingen.code_geldig_dagen * 86400000);
+    }
+  }
+  $("standAfmelden").textContent = afmelden;
+  const vak = $("startMelding");
+  vak.textContent = melding || "";
+  vak.hidden = !melding;
 }
 
 const STANDEN = {

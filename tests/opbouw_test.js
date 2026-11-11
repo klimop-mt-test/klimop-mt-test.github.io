@@ -1,15 +1,15 @@
 // MT · tests/opbouw_test.js
 // De opbouw van de repository (B206): in de hoofdmap enkel index.html, README.md en .nojekyll,
-// en de mappen .github, code, opmaak, sql en tests. Staat er nog een ander bestand, dan zegt deze
+// en de mappen .github, code, functies, opmaak, sql en tests. Staat er nog een ander bestand, dan zegt deze
 // test welk, en dat het weg mag.
 
 import assert from "node:assert/strict";
 import { MAP } from "./hulp.js";
 
 const BESTANDEN = new Set(["index.html", "README.md", ".nojekyll"]);
-const MAPPEN = new Set([".github", "code", "opmaak", "sql", "tests"]);
+const MAPPEN = new Set([".github", "code", "functies", "opmaak", "sql", "tests"]);
 
-Deno.test("de hoofdmap bevat enkel index.html, README.md, .nojekyll en de vijf mappen", () => {
+Deno.test("de hoofdmap bevat enkel index.html, README.md, .nojekyll en de zes mappen", () => {
   const teVeel = [];
   for (const item of Deno.readDirSync(MAP)) {
     if (item.name === ".git") continue;

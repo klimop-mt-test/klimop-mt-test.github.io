@@ -1,17 +1,17 @@
-// MT · app.js · versie 0.3.0
+// MT · app.js · versie 0.4.0
 // De start (17.1): nooit in een andere pagina, dezelfde versie in alle bestanden, de omgeving uit
-// het adres, en de verbinding met de databank. Later ook de tabbladen en de keuzebalk scherp of
-// minder scherp (B75).
+// het adres, de verbinding met de databank, en sinds stap 2 de aanmelding en het afmelden (17.2).
+// Later ook de tabbladen en de keuzebalk scherp of minder scherp (B75).
 //
 // app.js laadt de andere bestanden zelf, zodat een ontbrekend bestand een duidelijke melding geeft.
 // Wijkt een versie af, door een vergeten bestand of een oude kopie in de browser (GitHub Pages laat
 // die tot tien minuten toe), dan haalt de MT de bestanden één keer vers op en herlaadt. Lukt dat
 // niet, dan start ze niet en zegt ze wat je kan doen.
 
-export const VERSIE = "0.3.0";
+export const VERSIE = "0.4.0";
 
 /** De bestanden die de MT laadt. Elk heeft export const VERSIE; een test bewaakt deze lijst. */
-const MODULES = ["./config.js", "./ui.js", "./data.js"];
+const MODULES = ["./config.js", "./ui.js", "./data.js", "./auth.js", "./aanmelden.js"];
 
 /**
  * Alles wat vers opgehaald wordt als de versies verschillen. De adressen gelden ten opzichte van
@@ -21,6 +21,9 @@ const PAGINA = ["./app.js", ...MODULES, "../opmaak/mt.css"].map((pad) => new URL
 
 /** Telt in deze sessie de pogingen om oude bestanden te vervangen: hoogstens één. */
 const HERSTEL = "mt_versie_herstel_v1";
+
+/** Afmelden na zoveel minuten zonder activiteit, tot de instelling van de MT gekend is (B26, B172). */
+let stilMinuten = 30;
 
 start();
 
@@ -45,7 +48,7 @@ async function start() {
     return;
   }
   vergeetHerstel();
-  const [config, ui, data] = geladen;
+  const [config, ui, data, auth, aanmelden] = geladen;
 
   // 3. De omgeving volgt uit het adres; een onbekend adres start niet (17.1).
   const omgeving = config.omgeving(location.hostname);
@@ -54,17 +57,90 @@ async function start() {
     return;
   }
 
-  // 4. Tonen, en de verbinding controleren. Een klik op de verbindingsbol controleert opnieuw.
+  // 4. De aanmelding: supabase-js uit de eigen repository (B158). Zonder kan niemand binnen.
+  if (!auth.stel(omgeving)) {
+    stop("De aanmelding van de MT laadt niet. Vernieuw de pagina met Ctrl+F5. Blijft dit staan, laad dan alle bestanden van de MT opnieuw op in GitHub.");
+    return;
+  }
   data.stel(omgeving);
+  data.stelToken(auth.token);
+
+  // 5. Tonen, en de verbinding controleren. Een klik op de verbindingsbol controleert opnieuw.
   ui.toonStart({ versie: VERSIE, omgeving });
   ui.opVerbindingKlik(() => controleer(ui, data));
-  await controleer(ui, data);
+  controleer(ui, data);
+
+  // 6. Afmelden gebeurt op één plaats, en herlaadt de pagina: zo blijft er niets van de vorige
+  //    aanmelding in het geheugen, ook geen geopend venster (T5).
+  let weg = false;
+  const afmelden = async (bericht = null) => {
+    if (weg) return;
+    weg = true;
+    await auth.afmelden(bericht);
+    location.reload();
+  };
+  auth.opAfgemeld(() => {
+    if (!weg) location.reload();
+  });
+  bewaakStilte(auth, afmelden);
+
+  // 7. Aanmelden: het scherm in stappen, tot de databank de aanmelding aanvaardt.
+  ui.zetGebruiker(null);
+  ui.toon("aanmelden");
+  const uit = await aanmelden.start({
+    kaart: document.getElementById("aanmeldKaart"),
+    appNaam: omgeving.app,
+    bericht: auth.haalBericht(),
+    afmelden,
+  });
+
+  // 8. Aangemeld. De schermen volgen in de volgende stappen; tot dan toont de MT wie je bent.
+  const account = uit.account;
+  if (account.instellingen && account.instellingen.afmelden_na_minuten > 0) stilMinuten = account.instellingen.afmelden_na_minuten;
+  ui.zetGebruiker(account.naam + ", " + account.rol, () => afmelden());
+  ui.toonAccount({
+    account,
+    blijft: auth.blijft(),
+    codeOp: uit.niveau.codeOp,
+    melding: uit.nietBlijven ? "\"Aangemeld blijven\" staat uit voor jouw rol: de MT meldt je af als je een tijd niets doet." : null,
+  });
+  ui.toon("start");
 }
 
 async function controleer(ui, data) {
   ui.zetVerbinding("bezig");
   const antwoord = await data.ping();
   ui.zetVerbinding(antwoord.ok ? "ok" : "fout", antwoord.reden);
+}
+
+/**
+ * Op een gedeelde computer (zonder "Aangemeld blijven") meldt de MT af na een tijd zonder activiteit
+ * (B26). Niet enkel met een klok: ook bij het terugkeren naar het tabblad of na de slaapstand (T5).
+ */
+function bewaakStilte(auth, afmelden) {
+  let laatst = 0;
+  const activiteit = () => {
+    const nu = Date.now();
+    if (nu - laatst < 15000) return;
+    laatst = nu;
+    auth.raak(nu);
+  };
+  for (const soort of ["pointerdown", "keydown", "scroll", "touchstart"]) {
+    window.addEventListener(soort, activiteit, { passive: true, capture: true });
+  }
+  const kijk = async () => {
+    if (auth.blijft() || !(await auth.token())) return;
+    if (auth.teLangStil(auth.laatste(), Date.now(), stilMinuten)) {
+      await afmelden("Je bent afgemeld: er gebeurde " + stilMinuten + " minuten niets.");
+    }
+  };
+  setInterval(kijk, 30000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) kijk();
+  });
+  window.addEventListener("focus", kijk);
+  window.addEventListener("pageshow", kijk);
+  kijk();
 }
 
 function versieVanHtml() {

@@ -55,6 +55,37 @@ Deno.test("regel 3: enkel data.js, adapter.js en app.js gebruiken fetch", () => 
   }
 });
 
+Deno.test("regel 3: enkel auth.js gebruikt supabase-js, en de schermen roepen Supabase nooit zelf op", () => {
+  for (const pad of paginaModules()) {
+    const code = lees(pad);
+    if (naamVan(pad) !== "auth.js") {
+      assert.doesNotMatch(code, /globalThis\.supabase|window\.supabase|createClient|signInWithPassword|\.auth\.mfa\b/, pad + " gebruikt supabase-js");
+    }
+    if (!["data.js", "config.js"].includes(naamVan(pad))) {
+      assert.doesNotMatch(code, /\/rest\/v1|\/auth\/v1|\/functions\/v1/, pad + " kent een pad van Supabase");
+    }
+  }
+});
+
+Deno.test("de opslag van de browser: enkel auth.js voor de aanmelding, en app.js voor de versiecontrole", () => {
+  const mag = new Set(["auth.js", "app.js"]);
+  for (const pad of paginaModules()) {
+    if (mag.has(naamVan(pad))) continue;
+    assert.doesNotMatch(lees(pad), /\b(localStorage|sessionStorage|indexedDB|document\.cookie)\b/, pad + " gebruikt de opslag van de browser");
+  }
+  assert.doesNotMatch(lees(CODE + "app.js"), /\blocalStorage\b/, "app.js bewaart iets blijvend in de browser");
+});
+
+Deno.test("een wachtwoord of een toegangsbewijs komt nooit in de console of in de opslag", () => {
+  for (const pad of [...paginaModules(), "functies/mt-accounts/index.ts"]) {
+    const code = lees(pad);
+    for (const m of code.matchAll(/console\.(log|info|warn|error|debug)\s*\(([^;]*)/g)) {
+      assert.doesNotMatch(m[2], /wachtwoord|password|token|sleutel|geheim|secret/i, pad + " schrijft mogelijk een geheim naar de console: " + m[0].slice(0, 80));
+    }
+  }
+  assert.doesNotMatch(lees(CODE + "auth.js"), /setItem\([^)]*(wachtwoord|password)/i, "auth.js bewaart een wachtwoord");
+});
+
 // ---------- Regel 4: enkel ui.js schrijft HTML ----------
 
 const HTML_SCHRIJVEN = /\b(innerHTML|outerHTML|insertAdjacentHTML|createContextualFragment|srcdoc)\b|document\.write|\bDOMParser\b/;

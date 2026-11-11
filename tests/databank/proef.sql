@@ -101,8 +101,29 @@ insert into auth.users (id, email) select proef.id(n), 'proef' || n || '@voorbee
 insert into auth.sessions (id, user_id) select proef.id(n), proef.id(n) from generate_series(1, 10) n;
 insert into auth.sessions (id, user_id, not_after) values (proef.id(90), proef.id(3), now() - interval '1 minute');
 
+-- De eerste beheerder komt er zoals op de echte Supabase: het account bestaat bij Supabase (het
+-- dashboard), en één oproep in de SQL Editor maakt er de eerste beheerder van (004).
+select proef.zeker('eerste beheerder: een adres zonder account bij Supabase wordt geweigerd',
+  proef.fout($q$select mt_intern.eerste_beheerder('niemand@voorbeeld.test', 'Niemand')$q$, 'postgres') like 'P0001%dashboard%');
+select proef.zeker('eerste beheerder: een naam is verplicht',
+  proef.fout($q$select mt_intern.eerste_beheerder('proef1@voorbeeld.test', '  ')$q$, 'postgres') like 'P0001%naam%');
+select proef.zeker('eerste beheerder: niet bereikbaar via de Data API',
+  proef.fout($q$select mt_intern.eerste_beheerder('proef1@voorbeeld.test', 'Proef Beheerder')$q$, 'authenticated') like '42501%'
+  and proef.fout($q$select mt_intern.eerste_beheerder('proef1@voorbeeld.test', 'Proef Beheerder')$q$, 'service_role') like '42501%'
+  and proef.fout($q$select mt_intern.eerste_beheerder('proef1@voorbeeld.test', 'Proef Beheerder')$q$, 'anon') like '42501%');
+select proef.zeker('eerste beheerder: aangemaakt uit het account van het dashboard',
+  proef.fout($q$select mt_intern.eerste_beheerder(' PROEF1@voorbeeld.test ', ' Proef Beheerder ')$q$, 'postgres', true) = 'geen fout, 1 rijen');
+select proef.zeker('eerste beheerder: met een tijdelijk wachtwoord van 48 uur, en de app nog te koppelen',
+  (select rol = 'beheerder' and actief and wachtwoord_tijdelijk and not eerste_aanmelding_afgerond and app_koppelen
+          and tijdelijk_tot between now() + interval '47 hours' and now() + interval '49 hours'
+          and naam = 'Proef Beheerder' and email = 'proef1@voorbeeld.test'
+     from public.gebruikers where id = proef.id(1)));
+select proef.zeker('eerste beheerder: een tweede keer kan niet',
+  proef.fout($q$select mt_intern.eerste_beheerder('proef2@voorbeeld.test', 'Proef Tweede')$q$, 'postgres') like 'P0001%al een gebruiker%');
+update public.gebruikers set wachtwoord_tijdelijk = false, tijdelijk_tot = null, eerste_aanmelding_afgerond = true, app_koppelen = false
+ where id = proef.id(1);
+
 insert into public.gebruikers (id, naam, email, rol, actief, wachtwoord_tijdelijk, eerste_aanmelding_afgerond, app_koppelen, open_operatie) values
-  (proef.id(1), 'Proef Beheerder', 'proef1@voorbeeld.test', 'beheerder', true, false, true, false, null),
   (proef.id(2), 'Proef Tweede', 'proef2@voorbeeld.test', 'beheerder', true, false, true, false, null),
   (proef.id(3), 'Proef Vier A', 'proef3@voorbeeld.test', 'leerkracht', true, false, true, false, null),
   (proef.id(4), 'Proef Vier B', 'proef4@voorbeeld.test', 'leerkracht', true, false, true, false, null),
@@ -1250,6 +1271,409 @@ select proef.zeker('logboek: wat via een functie gebeurt, staat erin met wie het
   and exists (select 1 from public.logboek where tabel = 'bevestigingen' and wie = proef.id(3) and actie = 'toegevoegd')
   and exists (select 1 from public.logboek where tabel = 'taken' and wie = proef.id(1) and actie = 'gewijzigd' and nieuw ->> 'afhandeling' = 'was_mee'));
 select proef.zet_vandaag(null);
+
+-- ============================================================================================
+-- De accounts van 004 (stap 2)
+-- ============================================================================================
+-- Wat de serverfunctie doet, loopt hier als de rol service_role, met haar eigen toegangsbewijs: zonder
+-- gebruiker erin. Wat een beheerder doet, loopt als authenticated, via de doorgeefluiken.
+
+-- Voert iets uit zoals de serverfunctie: de rol service_role, en een toegangsbewijs zonder gebruiker.
+create function proef.srv(p_sql text) returns jsonb
+language plpgsql as $$
+declare
+  v_claims text := current_setting('request.jwt.claims', true);
+  v jsonb;
+begin
+  perform set_config('request.jwt.claims', '{"role": "service_role"}', true);
+  v := proef.json(p_sql, 'service_role');
+  perform set_config('request.jwt.claims', coalesce(v_claims, ''), true);
+  return v;
+end $$;
+create function proef.start(p_op integer, p_soort text, p_voor integer default null, p_gegevens jsonb default '{}') returns jsonb language sql as $$
+  select proef.json(format('select public.mt_account_start(%L, %L, %L, %L)', proef.id(p_op), p_soort,
+                           case when p_voor is null then null else proef.id(p_voor) end, p_gegevens))
+$$;
+create function proef.klaar(p_op integer, p_gelukt boolean, p_gegevens jsonb default '{}', p_melding text default null) returns jsonb language sql as $$
+  select proef.srv(format('select public.mt_account_klaar(%L, %L, %L, %L)', proef.id(p_op), p_gelukt, p_gegevens, p_melding))
+$$;
+create function proef.eigen(p_op integer, p_gebruiker integer) returns jsonb language sql as $$
+  select proef.srv(format('select public.mt_account_eigen_start(%L, %L, %L)', proef.id(p_op), 'wachtwoord_kiezen', proef.id(p_gebruiker)))
+$$;
+create function proef.stand(p_gebruiker integer) returns jsonb language sql as $$
+  select proef.srv(format('select public.mt_account_stand(%L)', proef.id(p_gebruiker)))
+$$;
+create function proef.rond(p_gebruiker integer) returns jsonb language sql as $$
+  select proef.srv(format('select public.mt_account_afgerond(%L)', proef.id(p_gebruiker)))
+$$;
+create function proef.nk(p_bron text) returns uuid language sql stable as $$
+  select id from public.klassen where schooljaar = proef.nieuw_jaar() and bron_id = p_bron
+$$;
+create function proef.wijzig(p_gebruiker integer, p_naam text, p_rol text) returns jsonb language sql as $$
+  select proef.json(format('select public.mt_gebruiker_wijzigen(%L, %L, %L)', proef.id(p_gebruiker), p_naam, p_rol))
+$$;
+create function proef.klassen(p_gebruiker integer, p_schooljaar text, p_klassen uuid[]) returns jsonb language sql as $$
+  select proef.json(format('select public.mt_klassen_toewijzen(%L, %L, %L)', proef.id(p_gebruiker), p_schooljaar, p_klassen))
+$$;
+
+-- Gebruikers: 11 de app opnieuw te koppelen, 12 een tijdelijk wachtwoord dat nog geldt, 13 een dat
+-- verlopen is, 14 een lezer in orde, 15 enkel bij Supabase, 16 een tweede beheerder, 17 tot 19 een
+-- tijdelijk wachtwoord dat nog geldt.
+insert into auth.users (id, email) select proef.id(n), 'proef' || n || '@voorbeeld.test' from generate_series(11, 19) n;
+insert into auth.sessions (id, user_id) select proef.id(n), proef.id(n) from generate_series(11, 19) n;
+insert into public.gebruikers (id, naam, email, rol, actief, wachtwoord_tijdelijk, tijdelijk_tot, eerste_aanmelding_afgerond, app_koppelen) values
+  (proef.id(11), 'Proef App', 'proef11@voorbeeld.test', 'leerkracht', true, false, null, true, true),
+  (proef.id(12), 'Proef Kiezer', 'proef12@voorbeeld.test', 'leerkracht', true, true, now() + interval '1 hour', false, true),
+  (proef.id(13), 'Proef Verlopen', 'proef13@voorbeeld.test', 'leerkracht', true, true, now() - interval '1 minute', false, true),
+  (proef.id(14), 'Proef Doel', 'proef14@voorbeeld.test', 'lezer', true, false, null, true, false),
+  (proef.id(16), 'Proef Collega', 'proef16@voorbeeld.test', 'beheerder', true, false, null, true, false),
+  (proef.id(17), 'Proef Hangt', 'proef17@voorbeeld.test', 'leerkracht', true, true, now() + interval '1 hour', false, true),
+  (proef.id(18), 'Proef Mislukt', 'proef18@voorbeeld.test', 'leerkracht', true, true, now() + interval '1 hour', false, true),
+  (proef.id(19), 'Proef Tempo', 'proef19@voorbeeld.test', 'leerkracht', true, true, now() + interval '1 hour', false, true);
+
+-- ---------- De tweestapsverificatie, strenger ----------
+
+select proef.aangemeld(proef.id(3), p_amr => jsonb_build_array(
+  jsonb_build_object('method', 'totp', 'timestamp', floor(extract(epoch from now()))::bigint),
+  jsonb_build_object('method', 'recovery', 'timestamp', floor(extract(epoch from now()))::bigint)));
+select proef.zeker('tweestaps: een sessie uit een herstellink telt niet, ook niet met de code erbij', proef.tel('select 1 where mt_intern.mt_mfa_ok()') = 0);
+select proef.aangemeld(proef.id(3), p_amr => jsonb_build_array(
+  jsonb_build_object('method', 'totp', 'timestamp', floor(extract(epoch from now()))::bigint),
+  jsonb_build_object('method', 'magiclink', 'timestamp', floor(extract(epoch from now()))::bigint)));
+select proef.zeker('tweestaps: een sessie uit een aanmeldlink telt niet', proef.tel('select 1 where mt_intern.mt_mfa_ok()') = 0);
+select proef.aangemeld(proef.id(3), p_amr => jsonb_build_array(
+  jsonb_build_object('method', 'totp', 'timestamp', floor(extract(epoch from now()))::bigint),
+  jsonb_build_object('method', 'otp', 'timestamp', floor(extract(epoch from now()))::bigint)));
+select proef.zeker('tweestaps: een sessie uit een code in een mail telt niet', proef.tel('select 1 where mt_intern.mt_mfa_ok()') = 0);
+select proef.aangemeld(proef.id(3));
+select proef.zeker('tweestaps: met het wachtwoord en de code wel', proef.tel('select 1 where mt_intern.mt_mfa_ok()') = 1);
+select proef.aangemeld(proef.id(11));
+select proef.zeker('tweestaps: zolang de app opnieuw te koppelen is, toont de databank niets', proef.tel('select 1 from public.schooljaren') = 0);
+update public.gebruikers set app_koppelen = false where id = proef.id(11);
+select proef.zeker('tweestaps: na het koppelen wel', proef.tel('select 1 from public.schooljaren') > 0);
+update public.gebruikers set eerste_aanmelding_afgerond = false where id = proef.id(11);
+select proef.zeker('tweestaps: zonder afgeronde eerste aanmelding niets, ook met een gekoppelde app', proef.tel('select 1 from public.schooljaren') = 0);
+update public.gebruikers set eerste_aanmelding_afgerond = true where id = proef.id(11);
+
+-- ---------- Wie welke functie bereikt ----------
+
+select proef.aangemeld(proef.id(1));
+select proef.zeker('serverfuncties: niet voor een aangemelde gebruiker, ook geen beheerder',
+  proef.json(format('select public.mt_account_stand(%L)', proef.id(1))) ->> 'fout' = '42501'
+  and proef.json(format('select public.mt_account_klaar(%L, true)', proef.id(900))) ->> 'fout' = '42501'
+  and proef.json(format('select public.mt_account_eigen_start(%L, %L, %L)', proef.id(901), 'wachtwoord_kiezen', proef.id(12))) ->> 'fout' = '42501'
+  and proef.json(format('select public.mt_account_afgerond(%L)', proef.id(12))) ->> 'fout' = '42501'
+  and proef.json(format('select mt_intern.account_afgerond(%L)', proef.id(12))) ->> 'fout' = '42501');
+select proef.zeker('serverfuncties: niet voor anon',
+  proef.json(format('select public.mt_account_stand(%L)', proef.id(1)), 'anon') ->> 'fout' = '42501'
+  and proef.json(format('select public.mt_account_afgerond(%L)', proef.id(12)), 'anon') ->> 'fout' = '42501');
+select proef.zeker('serverfuncties: de controle zelf weigert elke andere rol',
+  proef.json(format('select mt_intern.account_stand(%L)', proef.id(12)), 'postgres') ->> 'fout' = '42501'
+  and proef.json(format('select mt_intern.account_klaar(%L, true)', proef.id(900)), 'postgres') ->> 'fout' = '42501'
+  and proef.json(format('select mt_intern.account_eigen_start(%L, %L, %L)', proef.id(901), 'wachtwoord_kiezen', proef.id(12)), 'postgres') ->> 'fout' = '42501'
+  and proef.json(format('select mt_intern.account_afgerond(%L)', proef.id(12)), 'postgres') ->> 'fout' = '42501');
+select proef.zeker('service_role: enkel de vier functies; geen functie van de pagina en geen tabel',
+  proef.srv('select public.mt_mijn_account()') ->> 'fout' = '42501'
+  and proef.srv(format('select public.mt_account_start(%L, %L)', proef.id(902), 'aanmaken')) ->> 'fout' = '42501'
+  and proef.srv(format('select public.mt_gebruiker_wijzigen(%L, %L, %L)', proef.id(14), 'Nep', 'lezer')) ->> 'fout' = '42501'
+  and proef.srv(format('select public.mt_klassen_toewijzen(%L, %L, %L)', proef.id(3), proef.nieuw_jaar(), '{}')) ->> 'fout' = '42501'
+  and proef.tel('select 1 from public.gebruikers', 'service_role') = -1
+  and proef.tel('select 1 from public.account_operaties', 'service_role') = -1);
+select proef.zeker('functies: na 004 klopt de controle op alle functies nog', mt_intern.controleer_functies() is null, mt_intern.controleer_functies());
+
+-- ---------- De stand van het eigen account ----------
+
+select proef.zeker('stand: een account dat de MT niet kent', proef.stand(15) ->> 'bekend' = 'false' and proef.stand(15) -> 'account' is null);
+select proef.zeker('stand: een tijdelijk wachtwoord dat nog geldt, met de instellingen om aan te melden',
+  (select j -> 'account' ->> 'wachtwoord_tijdelijk' = 'true' and j -> 'account' ->> 'tijdelijk_verlopen' = 'false'
+          and j -> 'account' ->> 'app_koppelen' = 'true' and j -> 'account' ->> 'bezig' = 'false' and j -> 'account' ->> 'rol' = 'leerkracht'
+          and j -> 'account' ->> 'actief' = 'true' and j -> 'account' ->> 'naam' = 'Proef Kiezer'
+          and j -> 'instellingen' ->> 'afmelden_na_minuten' = '30' and j -> 'instellingen' ->> 'wachtwoord_min_lengte' = '12'
+          and j -> 'instellingen' ->> 'code_geldig_dagen' = '14' and j -> 'instellingen' ->> 'tijdelijk_wachtwoord_uren' = '48'
+          and j -> 'instellingen' ->> 'aangemeld_blijven' = 'true'
+     from (select proef.stand(12) as j) x));
+select proef.zeker('stand: een verlopen tijdelijk wachtwoord', proef.stand(13) -> 'account' ->> 'tijdelijk_verlopen' = 'true');
+update public.instellingen set aangemeld_blijven_leerkracht = false;
+select proef.zeker('stand: aangemeld blijven volgt de rol (B148)',
+  proef.stand(12) -> 'instellingen' ->> 'aangemeld_blijven' = 'false' and proef.stand(14) -> 'instellingen' ->> 'aangemeld_blijven' = 'true');
+update public.instellingen set aangemeld_blijven_leerkracht = true;
+
+-- ---------- Een eigen wachtwoord kiezen (17.4, T5) ----------
+
+select proef.zeker('eigen wachtwoord: niet na de termijn, met de tijd van de databank',
+  proef.eigen(910, 13) ->> 'fout' = 'MT422' and proef.eigen(910, 13) ->> 'tekst' like '%verlopen%');
+select proef.zeker('eigen wachtwoord: enkel bij een tijdelijk wachtwoord', proef.eigen(911, 14) ->> 'tekst' like '%geen tijdelijk wachtwoord%');
+select proef.zeker('eigen wachtwoord: niet voor een uitgeschakeld of een onbekend account',
+  proef.eigen(912, 7) ->> 'tekst' like '%uitgeschakeld%' and proef.eigen(913, 15) ->> 'fout' = '42501');
+select proef.zeker('eigen wachtwoord: een andere eigen handeling bestaat niet',
+  proef.srv(format('select public.mt_account_eigen_start(%L, %L, %L)', proef.id(914), 'uitschakelen', proef.id(12))) ->> 'fout' = '22023');
+select proef.zeker('eigen wachtwoord: de start geeft het e-mailadres en de minimumlengte',
+  (select j ->> 'email' = 'proef12@voorbeeld.test' and j ->> 'wachtwoord_min_lengte' = '12' from (select proef.eigen(920, 12) as j) x));
+select proef.zeker('eigen wachtwoord: tijdens de handeling is het account geblokkeerd, met de beginstand bewaard',
+  (select open_operatie = proef.id(920) from public.gebruikers where id = proef.id(12))
+  and (select soort = 'wachtwoord_kiezen' and door = proef.id(12) and voor = proef.id(12) and afgerond_op is null
+              and beginstand -> 'account' ->> 'wachtwoord_tijdelijk' = 'true'
+         from public.account_operaties where id = proef.id(920)));
+select proef.zeker('eigen wachtwoord: geen tweede handeling terwijl er een loopt', proef.eigen(921, 12) ->> 'fout' = 'MT409');
+select proef.zeker('eigen wachtwoord: de stand meldt dat er een handeling loopt', proef.stand(12) -> 'account' ->> 'bezig' = 'true');
+select proef.zeker('eigen wachtwoord: afronden', proef.klaar(920, true) ->> 'ok' = 'true');
+select proef.zeker('eigen wachtwoord: niet meer tijdelijk, zonder termijn, niet meer geblokkeerd',
+  (select not wachtwoord_tijdelijk and tijdelijk_tot is null and open_operatie is null and not eerste_aanmelding_afgerond and app_koppelen
+     from public.gebruikers where id = proef.id(12))
+  and (select resultaat = 'gelukt' and afgerond_op is not null and eindstand -> 'account' ->> 'wachtwoord_tijdelijk' = 'false'
+         from public.account_operaties where id = proef.id(920)));
+select proef.zeker('eigen wachtwoord: twee keer afronden kan niet', proef.klaar(920, true) ->> 'fout' = 'MT409');
+select proef.zeker('afronden: een handeling die niet bestaat', proef.klaar(999, true) ->> 'fout' = '22023');
+
+select proef.zeker('hangende handeling: de start', proef.eigen(930, 17) ->> 'email' is not null);
+update public.account_operaties set begonnen_op = now() - interval '4 minutes' where id = proef.id(930);
+select proef.zeker('hangende handeling: na drie minuten vervalt ze bij de volgende vraag naar de stand', proef.stand(17) -> 'account' ->> 'bezig' = 'false');
+select proef.zeker('hangende handeling: mislukt in het register, en het account houdt zijn tijdelijke wachtwoord',
+  (select resultaat = 'mislukt' and afgerond_op is not null from public.account_operaties where id = proef.id(930))
+  and (select open_operatie is null and wachtwoord_tijdelijk from public.gebruikers where id = proef.id(17)));
+select proef.zeker('hangende handeling: te laat afronden kan niet meer', proef.klaar(930, true) ->> 'fout' = 'MT409');
+select proef.zeker('hangende handeling: opnieuw starten', proef.eigen(931, 17) ->> 'email' is not null);
+update public.account_operaties set begonnen_op = now() - interval '4 minutes' where id = proef.id(931);
+select proef.zeker('hangende handeling: ook een nieuwe start ruimt ze op', proef.eigen(932, 17) ->> 'email' is not null);
+select proef.zeker('hangende handeling: de nieuwe blokkeert, de oude is mislukt',
+  (select open_operatie = proef.id(932) from public.gebruikers where id = proef.id(17))
+  and (select resultaat = 'mislukt' from public.account_operaties where id = proef.id(931)));
+
+select proef.zeker('mislukt: de start', proef.eigen(940, 18) ->> 'email' is not null);
+select proef.zeker('mislukt: de serverfunctie meldt dat het bij Supabase niet lukte',
+  (select j ->> 'ok' = 'false' and j ->> 'geblokkeerd' = 'false' from (select proef.klaar(940, false, '{}', 'Supabase weigerde het wachtwoord.') as j) x));
+select proef.zeker('mislukt: het account is niet meer geblokkeerd en houdt zijn stand, met de melding in het register',
+  (select open_operatie is null and wachtwoord_tijdelijk from public.gebruikers where id = proef.id(18))
+  and (select resultaat = 'mislukt' and melding = 'Supabase weigerde het wachtwoord.' from public.account_operaties where id = proef.id(940)));
+
+do $$
+begin
+  for i in 1..10 loop
+    perform proef.eigen(950 + i, 19);
+    perform proef.klaar(950 + i, false);
+  end loop;
+end $$;
+select proef.zeker('tempo: tien pogingen in tien minuten', (select count(*) = 10 from public.account_operaties where door = proef.id(19)));
+select proef.zeker('tempo: de elfde wordt geweigerd', proef.eigen(961, 19) ->> 'fout' = 'MT429');
+update public.account_operaties set begonnen_op = begonnen_op - interval '11 minutes' where door = proef.id(19);
+select proef.zeker('tempo: na tien minuten kan het weer', proef.eigen(962, 19) ->> 'email' is not null);
+
+-- ---------- De eerste aanmelding afronden ----------
+
+select proef.zeker('afronden: niet met een tijdelijk wachtwoord, niet uitgeschakeld, niet onbekend',
+  proef.rond(13) ->> 'tekst' like '%eigen wachtwoord%' and proef.rond(7) ->> 'tekst' like '%uitgeschakeld%' and proef.rond(15) ->> 'fout' = '42501');
+select proef.aangemeld(proef.id(12));
+select proef.zeker('afronden: vóór het afronden toont de databank niets, ook met een code', proef.tel('select 1 from public.schooljaren') = 0);
+select proef.zeker('afronden: de eerste aanmelding en de koppeling', proef.rond(12) ->> 'al_afgerond' = 'false');
+select proef.zeker('afronden: de stand, en de handeling in het register',
+  (select eerste_aanmelding_afgerond and not app_koppelen from public.gebruikers where id = proef.id(12))
+  and (select count(*) = 1 from public.account_operaties
+        where soort = 'afronden' and voor = proef.id(12) and door = proef.id(12) and resultaat = 'gelukt'
+          and beginstand -> 'account' ->> 'app_koppelen' = 'true' and eindstand -> 'account' ->> 'app_koppelen' = 'false'));
+select proef.zeker('afronden: daarna toont de databank haar gegevens', proef.tel('select 1 from public.schooljaren') > 0);
+select proef.zeker('afronden: herhalen wijzigt niets', proef.rond(12) ->> 'al_afgerond' = 'true');
+select proef.zeker('afronden: geen tweede regel in het register', (select count(*) = 1 from public.account_operaties where soort = 'afronden' and voor = proef.id(12)));
+
+-- ---------- Een account aanmaken (B25) ----------
+
+select proef.aangemeld(proef.id(3));
+select proef.zeker('accounts: een leerkracht start geen handeling',
+  proef.start(1000, 'aanmaken', null, '{"naam": "Nep", "email": "nep@voorbeeld.test", "rol": "beheerder"}') ->> 'fout' = '42501');
+select proef.aangemeld(proef.id(5));
+select proef.zeker('accounts: een lezer ook niet',
+  proef.start(1000, 'aanmaken', null, '{"naam": "Nep", "email": "nep@voorbeeld.test", "rol": "beheerder"}') ->> 'fout' = '42501');
+select proef.aangemeld(proef.id(1), 'aal1');
+select proef.zeker('accounts: een beheerder zonder code ook niet',
+  proef.start(1000, 'aanmaken', null, '{"naam": "Nep", "email": "nep@voorbeeld.test", "rol": "beheerder"}') ->> 'fout' = '42501');
+select proef.aangemeld(proef.id(1));
+select proef.zeker('aanmaken: naam, e-mailadres en rol worden nagekeken',
+  proef.start(1001, 'aanmaken', null, '{"naam": " ", "email": "a@voorbeeld.test", "rol": "lezer"}') ->> 'tekst' like '%naam%'
+  and proef.start(1001, 'aanmaken', null, '{"naam": "A", "email": "geen adres", "rol": "lezer"}') ->> 'tekst' like '%geldig e-mailadres%'
+  and proef.start(1001, 'aanmaken', null, '{"naam": "A", "email": "a@voorbeeld", "rol": "lezer"}') ->> 'tekst' like '%geldig e-mailadres%'
+  and proef.start(1001, 'aanmaken', null, '{"naam": "A", "email": "a@voorbeeld.test", "rol": "directeur"}') ->> 'tekst' like '%kies een rol%'
+  and proef.start(1001, 'aanmaken', null, '{"naam": "A", "email": " PROEF3@voorbeeld.test ", "rol": "lezer"}') ->> 'tekst' like '%bestaat al%');
+select proef.zeker('accounts: een oproep die niet klopt',
+  proef.start(1001, 'aanmaken', 14, '{"naam": "A", "email": "a@voorbeeld.test", "rol": "lezer"}') ->> 'fout' = '22023'
+  and proef.start(1001, 'opruimen', 14) ->> 'fout' = '22023'
+  and proef.start(1001, 'uitschakelen') ->> 'fout' = '22023');
+select proef.zeker('aanmaken: de start zet het adres netjes',
+  proef.start(1002, 'aanmaken', null, '{"naam": "  Proef Vijftien ", "email": " Proef15@Voorbeeld.TEST ", "rol": "leerkracht"}') ->> 'email' = 'proef15@voorbeeld.test');
+select proef.zeker('aanmaken: het plan staat in de databank, op naam van de beheerder',
+  (select door = proef.id(1) and voor is null and afgerond_op is null
+          and beginstand -> 'plan' = '{"naam": "Proef Vijftien", "email": "proef15@voorbeeld.test", "rol": "leerkracht"}'::jsonb
+     from public.account_operaties where id = proef.id(1002)));
+select proef.zeker('aanmaken: hetzelfde operatienummer start geen tweede handeling',
+  proef.start(1002, 'aanmaken', null, '{"naam": "Dubbel", "email": "dubbel@voorbeeld.test", "rol": "lezer"}') ->> 'fout' = 'MT409');
+select proef.zeker('aanmaken: een ander account van Supabase dan gevraagd wordt geweigerd',
+  proef.klaar(1002, true, jsonb_build_object('gebruiker', proef.id(14))) ->> 'tekst' like '%klopt niet%'
+  and proef.klaar(1002, true) ->> 'tekst' like '%klopt niet%');
+select proef.zeker('aanmaken: afronden met het account dat Supabase aanmaakte',
+  proef.klaar(1002, true, jsonb_build_object('gebruiker', proef.id(15))) ->> 'gebruiker' = proef.id(15)::text);
+select proef.zeker('aanmaken: de gebruiker, met een tijdelijk wachtwoord van 48 uur en de app nog te koppelen',
+  (select naam = 'Proef Vijftien' and email = 'proef15@voorbeeld.test' and rol = 'leerkracht' and actief and wachtwoord_tijdelijk
+          and tijdelijk_tot between now() + interval '47 hours' and now() + interval '49 hours'
+          and not eerste_aanmelding_afgerond and app_koppelen and open_operatie is null and aangemaakt_door = proef.id(1)
+     from public.gebruikers where id = proef.id(15))
+  and (select voor = proef.id(15) and resultaat = 'gelukt' and eindstand -> 'account' ->> 'rol' = 'leerkracht'
+         from public.account_operaties where id = proef.id(1002)));
+select proef.zeker('aanmaken: een tweede start voor een ander adres',
+  proef.start(1003, 'aanmaken', null, '{"naam": "Proef Weg", "email": "weg@voorbeeld.test", "rol": "lezer"}') ->> 'email' = 'weg@voorbeeld.test');
+select proef.zeker('aanmaken: mislukt bij Supabase', proef.klaar(1003, false, '{}', 'Supabase gaf geen antwoord.') ->> 'geblokkeerd' = 'false');
+select proef.zeker('aanmaken: dan is er geen gebruiker, en staat de mislukking in het register',
+  not exists (select 1 from public.gebruikers where email = 'weg@voorbeeld.test')
+  and (select resultaat = 'mislukt' and voor is null and melding = 'Supabase gaf geen antwoord.' from public.account_operaties where id = proef.id(1003)));
+
+-- ---------- Een nieuw tijdelijk wachtwoord, en de app opnieuw koppelen ----------
+
+select proef.aangemeld(proef.id(14));
+select proef.zeker('tijdelijk wachtwoord: vooraf leest de lezer', proef.tel('select 1 from public.schooljaren') > 0);
+select proef.aangemeld(proef.id(1));
+select proef.zeker('tijdelijk wachtwoord: niet op het eigen account, niet op een onbekend of een uitgeschakeld account',
+  proef.start(1010, 'tijdelijk_wachtwoord', 1) ->> 'tekst' like '%eigen account%'
+  and proef.start(1010, 'tijdelijk_wachtwoord', 8) ->> 'tekst' like '%bestaat niet%'
+  and proef.start(1010, 'tijdelijk_wachtwoord', 7) ->> 'tekst' like '%uitgeschakeld%');
+select proef.zeker('tijdelijk wachtwoord: de start geeft het e-mailadres en de termijn',
+  (select j ->> 'email' = 'proef14@voorbeeld.test' and j ->> 'uren' = '48' and j ->> 'app_wissen' = 'false' and j ->> 'gebruiker' = proef.id(14)::text
+     from (select proef.start(1010, 'tijdelijk_wachtwoord', 14) as j) x));
+select proef.aangemeld(proef.id(14));
+select proef.zeker('tijdelijk wachtwoord: de toegang is meteen geblokkeerd, vóór er iets bij Supabase wijzigt (T5)',
+  proef.tel('select 1 from public.schooljaren') = 0);
+select proef.zeker('afronden: niet terwijl er een handeling loopt', proef.rond(14) ->> 'fout' = 'MT409');
+select proef.aangemeld(proef.id(1));
+select proef.zeker('tijdelijk wachtwoord: geen tweede handeling terwijl de eerste loopt', proef.start(1011, 'tijdelijk_wachtwoord', 14) ->> 'fout' = 'MT409');
+select proef.zeker('tijdelijk wachtwoord: afronden', proef.klaar(1010, true) ->> 'ok' = 'true');
+select proef.zeker('tijdelijk wachtwoord: tijdelijk, met een termijn van 48 uur; de app blijft gekoppeld',
+  (select wachtwoord_tijdelijk and tijdelijk_tot between now() + interval '47 hours' and now() + interval '49 hours'
+          and not app_koppelen and open_operatie is null and eerste_aanmelding_afgerond
+     from public.gebruikers where id = proef.id(14)));
+select proef.aangemeld(proef.id(14));
+select proef.zeker('tijdelijk wachtwoord: tot het eigen wachtwoord gekozen is, toont de databank niets', proef.tel('select 1 from public.schooljaren') = 0);
+select proef.aangemeld(proef.id(1));
+select proef.zeker('app opnieuw koppelen: de start', proef.start(1012, 'tijdelijk_wachtwoord', 14, '{"app_wissen": true}') ->> 'app_wissen' = 'true');
+select proef.zeker('app opnieuw koppelen: afronden', proef.klaar(1012, true) ->> 'ok' = 'true');
+select proef.zeker('app opnieuw koppelen: de koppeling staat op opnieuw te koppelen, met een nieuw tijdelijk wachtwoord',
+  (select app_koppelen and wachtwoord_tijdelijk and open_operatie is null from public.gebruikers where id = proef.id(14)));
+
+select proef.zeker('mislukte handeling: de start', proef.start(1013, 'tijdelijk_wachtwoord', 14) ->> 'gebruiker' is not null);
+select proef.zeker('mislukte handeling: de serverfunctie meldt het', proef.klaar(1013, false, '{}', 'Supabase gaf een fout.') ->> 'geblokkeerd' = 'true');
+select proef.zeker('mislukte handeling: het account blijft geblokkeerd tot een beheerder ze herhaalt (17.4)',
+  (select open_operatie = proef.id(1013) from public.gebruikers where id = proef.id(14))
+  and (select resultaat = 'mislukt' from public.account_operaties where id = proef.id(1013)));
+select proef.zeker('mislukte handeling: ze alsnog als gelukt afronden kan niet', proef.klaar(1013, true) ->> 'fout' = 'MT409');
+select proef.zeker('mislukte handeling: het account houdt zijn stand van voordien',
+  (select open_operatie = proef.id(1013) and app_koppelen and wachtwoord_tijdelijk from public.gebruikers where id = proef.id(14)));
+select proef.zeker('mislukte handeling: herhalen kan meteen', proef.start(1014, 'tijdelijk_wachtwoord', 14) ->> 'gebruiker' is not null);
+update public.account_operaties set begonnen_op = now() - interval '4 minutes' where id = proef.id(1014);
+select proef.zeker('hangende handeling van een beheerder: ze vervalt niet vanzelf', proef.stand(14) -> 'account' ->> 'bezig' = 'true');
+select proef.zeker('hangende handeling van een beheerder: na drie minuten kan een nieuwe ze vervangen', proef.start(1015, 'tijdelijk_wachtwoord', 14) ->> 'gebruiker' is not null);
+select proef.zeker('hangende handeling van een beheerder: hersteld in het register',
+  (select resultaat = 'hersteld' and afgerond_op is not null from public.account_operaties where id = proef.id(1014)));
+select proef.zeker('hangende handeling van een beheerder: de oude afronden kan niet meer', proef.klaar(1014, true) ->> 'fout' = 'MT409');
+update public.gebruikers set open_operatie = null where id = proef.id(14);
+select proef.zeker('afronden: enkel de handeling die het account blokkeert', proef.klaar(1015, true) ->> 'tekst' like '%vervangen door een nieuwe%');
+update public.gebruikers set open_operatie = proef.id(1015) where id = proef.id(14);
+select proef.zeker('hangende handeling van een beheerder: de nieuwe rondt af', proef.klaar(1015, true) ->> 'ok' = 'true');
+
+-- ---------- Uitschakelen en weer inschakelen ----------
+
+select proef.aangemeld(proef.id(4));
+select proef.zeker('uitschakelen: vooraf werkt het account', proef.tel('select 1 from public.schooljaren') > 0);
+select proef.aangemeld(proef.id(1));
+select proef.zeker('inschakelen: niet voor een account dat actief is', proef.start(1020, 'inschakelen', 4) ->> 'tekst' like '%al actief%');
+select proef.zeker('uitschakelen: de start', proef.start(1021, 'uitschakelen', 4) ->> 'gebruiker' = proef.id(4)::text);
+select proef.zeker('uitschakelen: meteen niet meer actief, vóór de sessies ingetrokken zijn (T5)',
+  (select not actief and open_operatie = proef.id(1021) from public.gebruikers where id = proef.id(4)));
+select proef.zeker('uitschakelen: afronden', proef.klaar(1021, true) ->> 'ok' = 'true');
+select proef.zeker('uitschakelen: uit, met een wachtwoord dat niet meer geldt',
+  (select not actief and wachtwoord_tijdelijk and tijdelijk_tot <= now() and open_operatie is null from public.gebruikers where id = proef.id(4)));
+select proef.aangemeld(proef.id(4));
+select proef.zeker('uitschakelen: het account bereikt niets meer', proef.tel('select 1 from public.schooljaren') = 0);
+select proef.aangemeld(proef.id(1));
+select proef.zeker('inschakelen: de start laat het account nog uit', proef.start(1022, 'inschakelen', 4) ->> 'actief' = 'false');
+select proef.zeker('inschakelen: nog niet actief tot Supabase klaar is', (select not actief from public.gebruikers where id = proef.id(4)));
+select proef.zeker('inschakelen: afronden', proef.klaar(1022, true) ->> 'ok' = 'true');
+select proef.zeker('inschakelen: actief, met een nieuw tijdelijk wachtwoord van 48 uur',
+  (select actief and wachtwoord_tijdelijk and tijdelijk_tot > now() + interval '47 hours' and open_operatie is null
+     from public.gebruikers where id = proef.id(4)));
+
+insert into public.account_operaties (id, soort, door, afgerond_op, resultaat)
+select gen_random_uuid(), 'aanmaken', proef.id(16), now(), 'mislukt' from generate_series(1, 120);
+select proef.aangemeld(proef.id(16));
+select proef.zeker('tempo: een beheerder start hoogstens 120 handelingen in tien minuten', proef.start(1030, 'tijdelijk_wachtwoord', 14) ->> 'fout' = 'MT429');
+update public.account_operaties set begonnen_op = begonnen_op - interval '11 minutes' where door = proef.id(16);
+select proef.zeker('tempo: daarna kan een beheerder weer verder', proef.start(1031, 'uitschakelen', 11) ->> 'gebruiker' is not null);
+select proef.zeker('uitschakelen: een leerkracht, door de tweede beheerder', proef.klaar(1031, true) ->> 'ok' = 'true');
+select proef.aangemeld(proef.id(1));
+select proef.zeker('uitschakelen: een andere beheerder kan, want wie het vraagt blijft over', proef.start(1032, 'uitschakelen', 16) ->> 'gebruiker' is not null);
+select proef.zeker('uitschakelen: de andere beheerder is uit', proef.klaar(1032, true) ->> 'ok' = 'true');
+
+-- ---------- Een ander e-mailadres ----------
+
+select proef.zeker('e-mailadres: geen ongeldig adres en geen adres dat al bestaat',
+  proef.start(1040, 'email_wijzigen', 14, '{"email": "fout adres"}') ->> 'tekst' like '%geldig e-mailadres%'
+  and proef.start(1040, 'email_wijzigen', 14, '{"email": "Proef3@voorbeeld.test"}') ->> 'tekst' like '%bestaat al%'
+  and proef.start(1040, 'email_wijzigen', 14, '{"email": "proef14@voorbeeld.test"}') ->> 'tekst' like '%bestaat al%');
+select proef.zeker('e-mailadres: de start geeft het oude en het nieuwe adres',
+  (select j ->> 'email' = 'proef14@voorbeeld.test' and j ->> 'email_nieuw' = 'nieuw14@voorbeeld.test'
+     from (select proef.start(1041, 'email_wijzigen', 14, '{"email": " Nieuw14@Voorbeeld.test "}') as j) x));
+select proef.zeker('e-mailadres: mislukt bij Supabase geeft het account weer vrij', proef.klaar(1041, false, '{}', 'Supabase weigerde het adres.') ->> 'geblokkeerd' = 'false');
+select proef.zeker('e-mailadres: het oude adres staat er nog',
+  (select email = 'proef14@voorbeeld.test' and open_operatie is null from public.gebruikers where id = proef.id(14)));
+select proef.zeker('e-mailadres: een nieuwe poging', proef.start(1042, 'email_wijzigen', 14, '{"email": "nieuw14@voorbeeld.test"}') ->> 'email_nieuw' is not null);
+select proef.zeker('e-mailadres: afronden', proef.klaar(1042, true) ->> 'ok' = 'true');
+select proef.zeker('e-mailadres: het nieuwe adres', (select email = 'nieuw14@voorbeeld.test' and open_operatie is null from public.gebruikers where id = proef.id(14)));
+
+-- ---------- Naam, rol en klassen (3, B126, B170) ----------
+
+select proef.aangemeld(proef.id(3));
+select proef.zeker('gebruiker wijzigen: enkel een beheerder',
+  proef.wijzig(14, 'Proef Doel', 'beheerder') ->> 'fout' = '42501'
+  and proef.klassen(3, proef.nieuw_jaar(), '{}') ->> 'fout' = '42501');
+select proef.aangemeld(proef.id(1));
+select proef.zeker('gebruiker wijzigen: naam en rol worden nagekeken',
+  proef.wijzig(14, '  ', 'lezer') ->> 'tekst' like '%naam%'
+  and proef.wijzig(14, 'Proef Doel', 'directeur') ->> 'fout' = 'MT422'
+  and proef.wijzig(8, 'Proef', 'lezer') ->> 'tekst' like '%bestaat niet%'
+  and proef.wijzig(1, 'Proef Beheerder', 'lezer') ->> 'tekst' like '%eigen rol%');
+select proef.zeker('gebruiker wijzigen: de eigen naam wel', proef.wijzig(1, ' Proef Beheerder Een ', 'beheerder') ->> 'naam' = 'Proef Beheerder Een');
+select proef.zeker('gebruiker wijzigen: de naam en de rol van een ander', proef.wijzig(14, 'Proef Doelwit', 'leerkracht') ->> 'rol' = 'leerkracht');
+select proef.zeker('gebruiker wijzigen: bewaard, met wie het deed',
+  (select naam = 'Proef Doelwit' and rol = 'leerkracht' and bijgewerkt_door = proef.id(1) from public.gebruikers where id = proef.id(14))
+  and exists (select 1 from public.logboek where tabel = 'gebruikers' and rij = proef.id(14)::text and wie = proef.id(1) and nieuw ->> 'rol' = 'leerkracht'));
+select proef.zeker('klassen: twee klassen van het lopende schooljaar, elk één keer',
+  jsonb_array_length(proef.klassen(14, proef.nieuw_jaar(), array[proef.nk('brona'), proef.nk('bronb'), proef.nk('brona')]) -> 'klassen') = 2);
+select proef.zeker('klassen: bewaard, met wie het deed',
+  (select count(*) = 2 and bool_and(aangemaakt_door = proef.id(1)) from public.klastoewijzingen
+    where gebruiker_id = proef.id(14) and schooljaar = proef.nieuw_jaar()));
+select proef.zeker('klassen: een nieuwe lijst', jsonb_array_length(proef.klassen(14, proef.nieuw_jaar(), array[proef.nk('bronb'), proef.nk('bronc')]) -> 'klassen') = 2);
+select proef.zeker('klassen: de lijst vervangt wat er stond',
+  (select count(*) = 2 and bool_and(klas_id in (proef.nk('bronb'), proef.nk('bronc'))) from public.klastoewijzingen
+    where gebruiker_id = proef.id(14) and schooljaar = proef.nieuw_jaar()));
+select proef.zeker('klassen: niet voor een lezer, niet met een klas van een ander schooljaar, niet in een afgesloten schooljaar',
+  proef.klassen(5, proef.nieuw_jaar(), array[proef.nk('brona')]) ->> 'tekst' like '%enkel een leerkracht%'
+  and proef.klassen(14, proef.nieuw_jaar(), array[proef.id(101)]) ->> 'fout' = 'MT422'
+  and proef.klassen(14, (select sj2 from proef.c), array[proef.id(121)]) ->> 'fout' = 'MT422'
+  and proef.klassen(14, '1999-2000', '{}') ->> 'fout' = '22023');
+select proef.zeker('klassen: de leerkracht van 4A krijgt haar klas van het nieuwe schooljaar', proef.klassen(3, proef.nieuw_jaar(), array[proef.nk('brona')]) ->> 'gebruiker' = proef.id(3)::text);
+select proef.zeker('klassen: haar klassen van de vorige schooljaren blijven staan', (select count(*) = 4 from public.klastoewijzingen where gebruiker_id = proef.id(3)));
+select proef.aangemeld(proef.id(3));
+select proef.zeker('mijn account: naam, rol, de klassen van het lopende schooljaar en wat de pagina nodig heeft om af te melden',
+  (select j ->> 'naam' = 'Proef Vier A' and j ->> 'rol' = 'leerkracht' and j ->> 'email' = 'proef3@voorbeeld.test'
+          and j ->> 'schooljaar' = proef.nieuw_jaar()
+          and j -> 'klassen' = jsonb_build_array(jsonb_build_object('id', proef.nk('brona'), 'naam', '4A'))
+          and j -> 'instellingen' ->> 'afmelden_na_minuten' = '30' and j -> 'instellingen' ->> 'code_geldig_dagen' = '14'
+          and j -> 'instellingen' ->> 'aangemeld_blijven' = 'true'
+     from (select proef.json('select public.mt_mijn_account()') as j) x), proef.json('select public.mt_mijn_account()')::text);
+select proef.aangemeld(proef.id(3), 'aal1');
+select proef.zeker('mijn account: niet zonder de code', proef.json('select public.mt_mijn_account()') ->> 'fout' = '42501');
+select proef.aangemeld(proef.id(5));
+select proef.zeker('mijn account: een lezer heeft geen klassen',
+  (select j ->> 'rol' = 'lezer' and j -> 'klassen' = '[]'::jsonb from (select proef.json('select public.mt_mijn_account()') as j) x));
+select proef.zeker('logboek: wat de serverfunctie afrondt, staat erin als service_role; de handeling zelf zegt wie het vroeg',
+  exists (select 1 from public.logboek l where l.tabel = 'gebruikers' and l.rij = proef.id(15)::text and l.actie = 'toegevoegd'
+             and l.databankrol = 'service_role' and l.wie is null)
+  and exists (select 1 from public.logboek l where l.tabel = 'account_operaties' and l.rij = proef.id(1002)::text and l.actie = 'toegevoegd'
+                 and l.wie = proef.id(1) and l.databankrol = 'authenticated'));
 
 -- ---------- De uitslag ----------
 

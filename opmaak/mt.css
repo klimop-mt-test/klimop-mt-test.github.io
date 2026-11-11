@@ -1,12 +1,12 @@
 /* ============================================================
-   MT · mt.css · versie 0.3.0
+   MT · mt.css · versie 0.4.0
    Maximumfactuur-tool van GO! basisschool Klim-Op (Vilvoorde).
    De tokens, de basis-CSS en de componenten van template 1.7, met de zandwereld,
    ongewijzigd overgenomen (design system 1.14). Daaronder de aanvullingen voor de MT.
    ============================================================ */
 
 /* De versie van dit bestand: app.js vergelijkt ze met de andere bestanden (17.1). */
-:root{--mt-versie:"0.3.0"}
+:root{--mt-versie:"0.4.0"}
 
 /* Outfit uit de eigen repository, niet via Google Fonts (B158). Licentie: OFL-outfit.txt. */
 @font-face{font-family:'Outfit';font-style:normal;font-display:swap;font-weight:100 900;
@@ -917,3 +917,39 @@ button.mx-cel:hover{box-shadow:0 0 0 2px var(--teal);transform:translateY(-1px)}
 .mt-stand dd.ok{color:var(--green-t)}
 .mt-stand dd.fout{color:var(--coral-t)}
 @media (max-width:520px){.mt-stand .rij{grid-template-columns:minmax(0,1fr)}}
+
+/* Stap 2: aanmelden met tweestapsverificatie (17.2; canvas: bord "Aanmelden met tweestapsverificatie") */
+.mt-niet{border:1px solid var(--line-d);background:var(--paper);color:var(--slate)}
+.mt-login-wrap{display:flex;flex-wrap:wrap;gap:24px;justify-content:center;align-items:flex-start;padding-top:20px}
+.mt-login{flex:0 1 460px;min-width:0;border-radius:var(--r-lg);box-shadow:0 14px 50px rgba(var(--w-donker),.12);padding:26px 30px 28px}
+.mt-login,.mt-login form{display:flex;flex-direction:column;gap:14px}
+.mt-login h2{font-size:24px;font-weight:800;letter-spacing:-.6px;outline:none}
+.mt-login .sub{font-size:14px;color:var(--slate);margin-top:3px}
+.mt-login .btn{width:100%;padding:12px 20px;font-size:14.5px}
+.mt-login .voet{font-size:12.5px;color:var(--slate);text-align:center}
+.mt-login .ferr,.mt-login .finfo{margin:0}
+.mt-inspring{display:block;padding-left:26px;margin-top:3px}
+.mt-stap{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:12.5px;font-weight:700;color:var(--teal-xd);margin-bottom:6px}
+.mt-stap span+span{font-weight:500;color:var(--slate);text-align:right}
+.mt-stapbalk{height:5px;border-radius:999px;background:var(--teal-l);overflow:hidden;margin-bottom:6px}
+.mt-stapbalk span{display:block;height:100%;width:0;background:var(--btn);border-radius:999px;transition:width .25s}
+.mt-qr{align-self:center;width:204px;height:204px;border:1.5px solid var(--line);border-radius:16px;background:var(--paper);padding:10px;display:grid;place-items:center}
+.mt-qr img{width:100%;height:100%;display:block}
+.mt-sleutel{font-size:17px;font-weight:700;letter-spacing:2px;text-align:center;padding:10px 12px;border-radius:var(--r-sm);background:var(--teal-l);color:var(--teal-xd);overflow-wrap:anywhere;user-select:all}
+.mt-code{display:flex;gap:8px;justify-content:center}
+.mt-code input{width:48px;height:56px;padding:0;text-align:center;font-size:22px;font-weight:700;border:1.5px solid var(--line-d);border-radius:var(--r-sm);background:var(--field);transition:border-color .15s,box-shadow .15s}
+.mt-code input:focus{outline:none;border-color:var(--teal);background:var(--paper);box-shadow:0 0 0 3px var(--teal-ring)}
+.mt-terug{align-self:center}
+.mt-login-aside{flex:0 1 320px;min-width:0;display:flex;flex-direction:column;gap:16px}
+.mt-login-aside .card{padding:18px 20px}
+.mt-login-aside h3{display:flex;align-items:center;gap:10px;font-size:12.5px;font-weight:700;letter-spacing:1.3px;text-transform:uppercase;color:var(--teal-d)}
+.mt-login-aside h3::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--teal);flex-shrink:0}
+.mt-login-aside p{margin-top:8px;font-size:13.5px;line-height:1.5}
+.mt-login-aside p+p{color:var(--slate)}
+.mt-melding{margin-bottom:14px;max-width:620px}
+@media (max-width:520px){
+  .mt-login{padding:20px 18px 22px}
+  .mt-code{gap:6px}
+  .mt-code input{width:42px;height:52px}
+}
+@media (prefers-reduced-motion:reduce){.mt-stapbalk span{transition:none}}
