@@ -1,4 +1,4 @@
-// MT · aanmelden.js · versie 0.5.0
+// MT · aanmelden.js · versie 0.5.1
 // Het aanmeldscherm (17.2, canvas: bord "Aanmelden met tweestapsverificatie"). De eerste keer vier
 // stappen: tijdelijk wachtwoord, eigen wachtwoord kiezen, app koppelen, code. Daarna twee: wachtwoord
 // en code. Welke stap volgt, beslist dit scherm niet zelf: het vraagt de stand van het account aan de
@@ -12,7 +12,7 @@ import * as data from "./data.js";
 import { ACCOUNTFUNCTIE, ACCOUNTFUNCTIE_VERSIE, MAILVOORBEELD } from "./config.js";
 import { html, zet } from "./ui.js";
 
-export const VERSIE = "0.5.0";
+export const VERSIE = "0.5.1";
 
 // ---------- Welke stap volgt ----------
 
@@ -54,6 +54,21 @@ const KAN_NIET = {
   bezig: ["Er loopt een wijziging aan je account", "De beheerder of het secretariaat wijzigt je account, of rondde dat nog niet af. Probeer het over enkele minuten opnieuw, of vraag het na."],
 };
 
+// ---------- Een wachtwoordveld met een oog ----------
+// Edge toont in een wachtwoordveld zelf een oog, maar haalt het weg zodra je het veld verlaat: het komt
+// pas terug als je het veld leegmaakt. Daarom heeft de MT een eigen oog, dat blijft staan. Een getoond
+// wachtwoord verbergt zich vanzelf weer na een halve minuut zonder typen, en bij het versturen.
+
+/** Zo lang blijft een getoond wachtwoord zichtbaar zonder dat er getypt wordt. */
+const ZICHTBAAR_MS = 30000;
+
+const OOG = html`<svg class="oog-open" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"></path><circle cx="12" cy="12" r="3"></circle></svg><svg class="oog-dicht" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"></path><path d="M10.6 5.1A10.9 10.9 0 0 1 12 5c6.4 0 10 7 10 7a17.5 17.5 0 0 1-3.2 4.1M6.6 6.6A17.4 17.4 0 0 0 2 12s3.6 7 10 7a10.7 10.7 0 0 0 5.4-1.5"></path><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"></path></svg>`;
+
+/** Elk wachtwoordveld van het aanmeldscherm: nooit nagekeken op spelling, en met het oog erbij. */
+function wachtwoordVeld(id, naam, invullen, voorbeeld = "") {
+  return html`<span class="mt-ww-veld"><input id="${id}" class="ctrl" type="password" name="${naam}" autocomplete="${invullen}" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="${voorbeeld}"><button class="mt-oog" type="button" aria-label="Wachtwoord tonen" title="Wachtwoord tonen" aria-pressed="false" data-oog="${id}">${OOG}</button></span>`;
+}
+
 // ---------- Het scherm ----------
 
 /**
@@ -83,11 +98,54 @@ export function start({ kaart, appNaam, bericht = null, afmelden }) {
 
   /** Schrijft een stap weg, en zet de balk en de focus. */
   function teken(opmaak, focus) {
+    verbergWachtwoorden();
     zet(kaart, opmaak);
     const balk = q(".mt-stapbalk span");
     if (balk) balk.style.width = Math.round(Number(balk.dataset.deel) * 100) + "%";
+    koppelOgen();
     const doel = focus ? q(focus) : q("h2");
     if (doel) doel.focus();
+  }
+
+  /** Per oog: de functie die het wachtwoord weer verbergt. */
+  let ogen = [];
+
+  function verbergWachtwoorden() {
+    for (const verberg of ogen) verberg();
+  }
+
+  /** Het oog toont of verbergt het wachtwoord van zijn veld, zo vaak je wil; de cursor blijft in het veld. */
+  function koppelOgen() {
+    ogen = [];
+    for (const oog of kaart.querySelectorAll(".mt-oog")) {
+      const veld = kaart.querySelector("#" + oog.dataset.oog);
+      let klok = null;
+      const zetZichtbaar = (tonen) => {
+        clearTimeout(klok);
+        klok = tonen ? setTimeout(() => zetZichtbaar(false), ZICHTBAAR_MS) : null;
+        if ((veld.type === "text") === tonen) return;
+        const [van, tot] = [veld.selectionStart, veld.selectionEnd];
+        veld.type = tonen ? "text" : "password";
+        try {
+          veld.setSelectionRange(van, tot);
+        } catch {
+          // de cursor staat dan waar de browser hem zet
+        }
+        const tekst = tonen ? "Wachtwoord verbergen" : "Wachtwoord tonen";
+        oog.setAttribute("aria-pressed", String(tonen));
+        oog.setAttribute("aria-label", tekst);
+        oog.title = tekst;
+      };
+      oog.addEventListener("click", () => {
+        zetZichtbaar(veld.type === "password");
+        veld.focus();
+      });
+      // Wie nog typt, houdt het wachtwoord zichtbaar: de halve minuut begint opnieuw.
+      veld.addEventListener("input", () => {
+        if (veld.type === "text") zetZichtbaar(true);
+      });
+      ogen.push(() => zetZichtbaar(false));
+    }
   }
 
   function fout(tekst) {
@@ -129,7 +187,7 @@ export function start({ kaart, appNaam, bericht = null, afmelden }) {
         </div>
         <div class="field">
           <label for="amWw">Wachtwoord</label>
-          <input id="amWw" class="ctrl" type="password" name="password" autocomplete="current-password">
+          ${wachtwoordVeld("amWw", "password", "current-password")}
           <span class="hint">Eerste keer? Gebruik het tijdelijke wachtwoord dat je van de beheerder of het secretariaat kreeg.</span>
         </div>
         <div>
@@ -146,6 +204,7 @@ export function start({ kaart, appNaam, bericht = null, afmelden }) {
     }
     q("form").addEventListener("submit", async (gebeurtenis) => {
       gebeurtenis.preventDefault();
+      verbergWachtwoorden();
       const email = q("#amMail").value.trim().toLowerCase();
       const wachtwoord = q("#amWw").value;
       if (!email || !wachtwoord) return fout("Vul je e-mailadres en je wachtwoord in.");
@@ -177,12 +236,12 @@ export function start({ kaart, appNaam, bericht = null, afmelden }) {
         <input class="sr-only" type="text" name="username" autocomplete="username" tabindex="-1" aria-hidden="true" value="${z.email || ""}" readonly>
         <div class="field">
           <label for="amNieuw1">Nieuw wachtwoord</label>
-          <input id="amNieuw1" class="ctrl" type="password" name="new-password" autocomplete="new-password" placeholder="${"Minstens " + minimum + " tekens"}">
+          ${wachtwoordVeld("amNieuw1", "new-password", "new-password", "Minstens " + minimum + " tekens")}
           <span class="hint">Een zin van enkele woorden is makkelijk te onthouden en moeilijk te raden.</span>
         </div>
         <div class="field">
           <label for="amNieuw2">Herhaal het nieuwe wachtwoord</label>
-          <input id="amNieuw2" class="ctrl" type="password" name="new-password-2" autocomplete="new-password" placeholder="Nog eens hetzelfde">
+          ${wachtwoordVeld("amNieuw2", "new-password-2", "new-password", "Nog eens hetzelfde")}
         </div>
         <p class="ferr mt-fout" role="alert" hidden></p>
         <button class="btn btn-primary" type="submit">Wachtwoord bewaren</button>
@@ -192,6 +251,7 @@ export function start({ kaart, appNaam, bericht = null, afmelden }) {
     koppelTerug(opnieuwBeginnen);
     q("form").addEventListener("submit", async (gebeurtenis) => {
       gebeurtenis.preventDefault();
+      verbergWachtwoorden();
       const nieuw = q("#amNieuw1").value;
       if ([...nieuw].length < minimum) return fout("Kies een wachtwoord van minstens " + minimum + " tekens.");
       if (nieuw !== q("#amNieuw2").value) return fout("De twee wachtwoorden zijn niet gelijk.");

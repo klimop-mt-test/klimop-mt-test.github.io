@@ -86,6 +86,20 @@ Deno.test("een wachtwoord of een toegangsbewijs komt nooit in de console of in d
   assert.doesNotMatch(lees(CODE + "auth.js"), /setItem\([^)]*(wachtwoord|password)/i, "auth.js bewaart een wachtwoord");
 });
 
+Deno.test("elk wachtwoordveld heeft het oog van de MT, en wordt nooit nagekeken op spelling", () => {
+  const code = lees(CODE + "aanmelden.js");
+  const velden = [...code.matchAll(/<input\b[^>]*type="password"[^>]*>/g)];
+  assert.equal(velden.length, 1, "een wachtwoordveld staat buiten wachtwoordVeld()");
+  assert.match(velden[0][0], /spellcheck="false"/, "een getoond wachtwoord kan naar een spellingcontrole gaan");
+  assert.match(code, /function wachtwoordVeld\([^)]*\) \{\s*return html`<span class="mt-ww-veld">[^`]*<button class="mt-oog" type="button" aria-label="Wachtwoord tonen"[^`]*aria-pressed="false"/);
+  assert.equal([...code.matchAll(/\$\{wachtwoordVeld\(/g)].length, 3, "het aanmeldscherm telt drie wachtwoordvelden");
+  for (const pad of paginaModules()) {
+    if (naamVan(pad) !== "aanmelden.js") assert.doesNotMatch(lees(pad), /type="password"/, pad + " heeft een wachtwoordveld zonder het oog");
+  }
+  // Het ingebouwde oog van Edge verdwijnt zodra je het veld verlaat: de MT toont enkel haar eigen oog.
+  assert.match(lees("opmaak/mt.css"), /\.mt-ww-veld input::-ms-reveal[^{]*\{display:none\}/);
+});
+
 // ---------- Regel 4: enkel ui.js schrijft HTML ----------
 
 const HTML_SCHRIJVEN = /\b(innerHTML|outerHTML|insertAdjacentHTML|createContextualFragment|srcdoc)\b|document\.write|\bDOMParser\b/;
