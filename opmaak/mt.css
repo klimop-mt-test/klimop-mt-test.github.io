@@ -1,12 +1,12 @@
 /* ============================================================
-   MT · mt.css · versie 0.4.0
+   MT · mt.css · versie 0.5.0
    Maximumfactuur-tool van GO! basisschool Klim-Op (Vilvoorde).
    De tokens, de basis-CSS en de componenten van template 1.7, met de zandwereld,
    ongewijzigd overgenomen (design system 1.14). Daaronder de aanvullingen voor de MT.
    ============================================================ */
 
 /* De versie van dit bestand: app.js vergelijkt ze met de andere bestanden (17.1). */
-:root{--mt-versie:"0.4.0"}
+:root{--mt-versie:"0.5.0"}
 
 /* Outfit uit de eigen repository, niet via Google Fonts (B158). Licentie: OFL-outfit.txt. */
 @font-face{font-family:'Outfit';font-style:normal;font-display:swap;font-weight:100 900;
@@ -953,3 +953,75 @@ button.mx-cel:hover{box-shadow:0 0 0 2px var(--teal);transform:translateY(-1px)}
   .mt-code input{width:42px;height:52px}
 }
 @media (prefers-reduced-motion:reduce){.mt-stapbalk span{transition:none}}
+
+/* Stap 2b: het scherm Gebruikers (B165, B170; canvas: bord "Gebruikers"), de vensters en de meldingen */
+body.mt-venster-open{overflow:hidden}
+.mt-vraag{font-size:14.5px;line-height:1.5}
+.mt-naar{margin-top:16px;max-width:620px;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px 20px;flex-wrap:wrap}
+.mt-naar h3{font-size:16px;font-weight:700}
+.mt-naar p{font-size:13.5px;color:var(--slate);margin-top:2px;max-width:46ch}
+.mt-gbkop{margin-top:8px}
+.mt-gbkop h2{outline:none}
+.pill.vol{background:var(--btn);color:#fff;border-color:var(--btn)}
+.klas-tag.grijs{background:var(--bg);color:var(--slate)}
+.klas-tag.open{background:var(--amber-l);color:var(--amber-t)}
+.mt-filter{padding:12px 16px;margin-bottom:12px;display:flex;align-items:center;gap:10px 14px;flex-wrap:wrap}
+.mt-filter .ctrl{flex:1 1 260px;width:auto;height:38px;padding:0 12px}
+.mt-filters{display:flex;gap:8px 10px;flex-wrap:wrap;align-items:center}
+.mt-filters .seg{height:auto;min-height:32px;flex-wrap:wrap;flex-shrink:1}
+.mt-filters .seg button{height:26px}
+.mt-lijst{overflow:hidden}
+.mt-lijstkop{display:flex;align-items:center;justify-content:space-between;gap:6px 14px;flex-wrap:wrap;padding:12px 20px;font-size:13px;color:var(--slate)}
+.mt-lijstkop b{color:var(--ink)}
+.mt-rij{display:grid;grid-template-columns:minmax(0,1.4fr) 110px minmax(0,1.3fr) 230px 92px;gap:14px;align-items:center;min-height:58px;padding:8px 20px;border-top:1px solid var(--line)}
+.mt-rijkop{min-height:36px;padding-top:0;padding-bottom:0;background:var(--bg-2);border-bottom:1px solid var(--line);font-size:12.5px;font-weight:600;color:var(--slate)}
+.mt-rijkop+.mt-rij{border-top:none}
+.mt-wie{min-width:0}
+.mt-wie b{display:block;font-size:14px;font-weight:600;overflow-wrap:anywhere}
+.mt-wie small{display:block;font-size:12px;color:var(--slate);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mt-jij{font-weight:500;color:var(--slate);font-size:12.5px}
+.mt-klassen{display:flex;flex-direction:column;gap:3px;min-width:0}
+.mt-vorig{font-size:12px;color:var(--slate)}
+.mt-vorig .btn-link{font-size:12px;padding:0;text-decoration:underline}
+.mt-rij .pill{white-space:normal}
+.mt-actie{text-align:right}
+.mt-leeg{padding:22px 20px;border-top:1px solid var(--line);font-size:14px;color:var(--slate)}
+.mt-lijstvoet{padding:12px 20px 16px;border-top:1px solid var(--line);font-size:12.5px;color:var(--slate);display:flex;flex-direction:column;gap:4px}
+.mt-laadt{padding:8px 4px}
+.mt-lijstfout{margin:14px 16px;align-items:center}
+/* De kop en de voet van een venster kleven: wat de focus krijgt, schuift er niet onder. */
+.modal{scroll-padding:78px 0 74px}
+.mt-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 20px}
+.mt-form>*{grid-column:1 / -1}
+.mt-form>.mt-half{grid-column:auto}
+.mt-form .form-alert{margin:0}
+.mt-klaskies{display:flex;flex-wrap:wrap;gap:8px 22px}
+.mt-kgroep{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mt-kgroeptitel{font-size:12.5px;font-weight:600;color:var(--slate)}
+.mt-kkies{min-width:44px;height:32px;padding:0 11px;border-radius:9px;border:1.5px solid var(--line-d);background:var(--paper);font-size:13px;font-weight:600;color:var(--ink);transition:.13s}
+.mt-kkies:hover{border-color:var(--teal)}
+.mt-kkies.on{background:var(--btn);border-color:var(--btn);color:#fff}
+.mt-kkies:focus-visible{outline:3px solid var(--teal);outline-offset:2px}
+.mt-account{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--line);padding-top:16px}
+.mt-accountknoppen{display:flex;gap:10px 18px;flex-wrap:wrap;align-items:center}
+.mt-ww{font-size:26px;font-weight:700;letter-spacing:1.5px;text-align:center;padding:16px 12px;border-radius:var(--r-sm);background:var(--teal-l);color:var(--teal-xd);font-variant-numeric:tabular-nums;overflow-wrap:anywhere;user-select:all}
+.mt-wwknop{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+@media (max-width:900px){
+  .mt-rijkop{display:none}
+  .mt-rij{grid-template-columns:minmax(0,1fr) auto;gap:6px 12px;padding:12px 16px;align-items:start}
+  .mt-rij>.mt-wie{grid-column:1;grid-row:1}
+  .mt-rij>.mt-actie{grid-column:2;grid-row:1}
+  .mt-rij>[data-label]{grid-column:1 / -1;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+  .mt-rij>[data-label]::before{content:attr(data-label);flex:0 0 64px;font-size:12px;font-weight:600;color:var(--slate)}
+  .mt-rij>.mt-klassen{flex-direction:row}
+  .mt-lijstkop,.mt-lijstvoet,.mt-leeg{padding-left:16px;padding-right:16px}
+}
+@media (max-width:620px){
+  .mt-form{grid-template-columns:minmax(0,1fr)}
+}
+@media (max-width:520px){
+  .mt-ww{font-size:20px;letter-spacing:1px}
+  .mt-filter .ctrl{flex-basis:100%}
+}
+/* Een melding van de MT heeft geen knop: ze houdt dus geen klik tegen op wat eronder staat. */
+#meldingen .toast{pointer-events:none}

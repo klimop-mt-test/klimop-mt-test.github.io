@@ -10,7 +10,7 @@
 // De databank zelf wordt nagekeken in tests/databank/proef.sql; hier staat een eenvoudige nabootsing.
 
 import assert from "node:assert/strict";
-import { alleOmgevingen, omgeving } from "../code/config.js";
+import { ACCOUNTFUNCTIE_VERSIE, alleOmgevingen, omgeving } from "../code/config.js";
 import { lees } from "./hulp.js";
 import { maakBehandelaar, PAGINA, VERSIE } from "../functies/mt-accounts/index.ts";
 
@@ -311,10 +311,16 @@ Deno.test("serverfunctie: elke MT in config.js heeft haar pagina, en omgekeerd",
   }
 });
 
-Deno.test("serverfunctie: dezelfde versie als de pagina, en geen sleutel in het bestand", () => {
+Deno.test("serverfunctie: de versie die de pagina verwacht, en geen sleutel in het bestand", () => {
   const bron = lees("functies/mt-accounts/index.ts");
-  assert.match(lees("code/app.js"), new RegExp('export const VERSIE = "' + VERSIE.replaceAll(".", "\\.") + '";'));
+  // De serverfunctie houdt het nummer van de levering waarin ze laatst wijzigde: enkel dan plakt Pablo
+  // ze opnieuw in Supabase. De pagina kijkt na dat in Supabase de versie staat die ze verwacht.
+  assert.equal(VERSIE, ACCOUNTFUNCTIE_VERSIE, "config.js verwacht een andere versie van de serverfunctie dan in functies/ staat");
   assert.match(bron.split("\n")[0], new RegExp("versie " + VERSIE.replaceAll(".", "\\.") + "$"));
+  const paginaVersie = lees("code/app.js").match(/export const VERSIE = "([0-9.]+)";/)[1];
+  const cijfers = (v) => v.split(".").map(Number);
+  const [a, b] = [cijfers(VERSIE), cijfers(paginaVersie)];
+  assert.ok(a[0] < b[0] || (a[0] === b[0] && (a[1] < b[1] || (a[1] === b[1] && a[2] <= b[2]))), "de serverfunctie is nieuwer dan de pagina");
   assert.doesNotMatch(bron, /sb_(secret|publishable)_[A-Za-z0-9]/, "een sleutel staat in het bestand van de serverfunctie");
   assert.doesNotMatch(bron, /SUPABASE_SERVICE_ROLE_KEY|SUPABASE_ANON_KEY/, "de serverfunctie gebruikt een oude sleutel");
   assert.doesNotMatch(bron, /\bfrom\s+["'](npm:|jsr:|https?:)/, "de serverfunctie laadt code van buitenaf");

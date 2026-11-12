@@ -1,14 +1,15 @@
-// MT · data.js · versie 0.4.0
+// MT · data.js · versie 0.5.0
 // De verbinding met de eigen databank (17.1, 17.8). De schermen praten enkel via dit bestand met
 // Supabase (regel 3). De publishable key gaat enkel als apikey mee; Authorization enkel met het
 // toegangsbewijs van een aangemelde gebruiker (design system 1.13).
 // Sinds stap 2: de databankfuncties (rpc/mt_…) en de serverfunctie voor de accounts, met de soort
 // fout erbij, zodat een scherm weet wat er scheelt zonder de tekst te lezen (64.4).
-// Later komen hier de paginering en de regel dat "geen rechten" nooit "geen gegevens" betekent (17.3).
+// Sinds stap 2b: tabellen lezen met paginering (17.8), en de regel dat "geen rechten" nooit "geen
+// gegevens" betekent (17.3).
 
 import { ACCOUNTFUNCTIE } from "./config.js";
 
-export const VERSIE = "0.4.0";
+export const VERSIE = "0.5.0";
 
 /** Zoals de REST-laag van de andere tools: na 12 seconden zonder antwoord is het een fout. */
 const WACHTTIJD = 12000;
@@ -109,8 +110,15 @@ const TEKST = {
   fout: "De databank gaf een fout. Probeer het opnieuw.",
 };
 
+/** De tekst van de databank als een zin: met een hoofdletter en een punt. */
+function zin(tekst) {
+  const t = String(tekst).trim();
+  if (!t) return t;
+  return t[0].toUpperCase() + t.slice(1) + (/[.!?]$/.test(t) ? "" : ".");
+}
+
 function mislukt(soort, tekst, status, extra = {}) {
-  return { ok: false, soort, tekst: tekst || TEKST[soort] || TEKST.fout, status, extra };
+  return { ok: false, soort, tekst: tekst ? zin(tekst) : TEKST[soort] || TEKST.fout, status, extra };
 }
 
 /**
@@ -149,4 +157,62 @@ export async function serverfunctie(actie, invoer = {}) {
   // Een antwoord van Supabase zelf, vóór de functie: het toegangsbewijs is geweigerd, of de functie viel uit.
   if (antwoord.status === 401) return mislukt("sessie", null, 401);
   return mislukt("fout", "De serverfunctie gaf een fout (" + antwoord.status + "). Probeer het opnieuw.", antwoord.status, extra);
+}
+
+// ---------- Tabellen lezen (17.8) ----------
+
+/** De Data API geeft nooit meer dan 1000 rijen per vraag terug. */
+const BLADZIJDE = 1000;
+/** Na zoveel bladzijden stopt het lezen: zoveel rijen telt geen scherm van de MT. */
+const MAX_BLADZIJDEN = 60;
+const NAAM = /^[a-z][a-z0-9_]*$/;
+
+/** Eén waarde in een lijst van een filter: tussen aanhalingstekens, zodat een komma of een haakje nooit de vraag wijzigt. */
+function inLijst(w) {
+  if (w === true || w === false || typeof w === "number") return String(w);
+  return '"' + String(w).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+}
+
+/**
+ * Leest rijen uit een tabel van de MT, als wie aangemeld is. RLS beslist wat terugkomt.
+ *   kolommen  de kolommen: ["id", "naam"]
+ *   waar      { kolom: waarde } is gelijk aan; { kolom: [a, b] } is één van; { kolom: null } is leeg
+ *   volgorde  ["naam", "id"]: verplicht, en eindigend op wat uniek is; anders verspringen de bladzijden
+ * Komt er niets terug, dan kijkt de MT eerst na of de aanmelding nog in orde is: zonder rechten toont
+ * de databank ook niets, en dat is geen lege lijst (17.3).
+ */
+export async function lees(tabel, { kolommen, waar = {}, volgorde }) {
+  const namen = [tabel, ...kolommen, ...Object.keys(waar), ...volgorde];
+  if (!namen.every((n) => NAAM.test(n)) || !kolommen.length || !volgorde.length) return mislukt("oproep", null, 0);
+  const token = await tokenBron();
+  if (!token) return mislukt("sessie", null, 0);
+  const vraag = ["select=" + kolommen.join(",")];
+  for (const [kolom, w] of Object.entries(waar)) {
+    if (w === null) vraag.push(kolom + "=is.null");
+    else if (Array.isArray(w)) {
+      if (!w.length) return { ok: true, gegevens: [] };
+      vraag.push(kolom + "=in.(" + encodeURIComponent(w.map(inLijst).join(",")) + ")");
+    } else vraag.push(kolom + "=eq." + encodeURIComponent(String(w)));
+  }
+  vraag.push("order=" + volgorde.map((kolom) => kolom + ".asc").join(","));
+  const rijen = [];
+  for (let blad = 0; blad < MAX_BLADZIJDEN; blad++) {
+    const antwoord = await roep("/rest/v1/" + tabel + "?" + vraag.join("&") + "&limit=" + BLADZIJDE + "&offset=" + blad * BLADZIJDE, { token });
+    if (!antwoord.ok || !Array.isArray(antwoord.gegevens)) {
+      if (antwoord.status === 0) return mislukt("verbinding", null, 0);
+      if (antwoord.status === 401) return mislukt("sessie", null, 401);
+      if (antwoord.status === 403) return mislukt("rechten", null, 403);
+      if (antwoord.status === 404) return mislukt("ontbreekt", "De databank kent deze tabel niet: een SQL-script is nog niet uitgevoerd.", 404);
+      return mislukt("fout", null, antwoord.status);
+    }
+    rijen.push(...antwoord.gegevens);
+    if (antwoord.gegevens.length < BLADZIJDE) {
+      if (rijen.length === 0) {
+        const nog = await rpc("mt_mijn_account");
+        if (!nog.ok) return nog;
+      }
+      return { ok: true, gegevens: rijen };
+    }
+  }
+  return mislukt("fout", "Deze lijst is te lang om in één keer te lezen.", 0);
 }

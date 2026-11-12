@@ -1,4 +1,4 @@
-// MT · config.js · versie 0.4.0
+// MT · config.js · versie 0.5.0
 // De adressen en sleutels per omgeving (17.1). De omgeving, test of productie, volgt uit het adres
 // van de pagina; een onbekend adres start niet.
 //
@@ -6,7 +6,7 @@
 // apikey mee (design system 1.13). Nooit een secret key (sb_secret_…) of een oude sleutel (eyJ…)
 // in dit bestand of elders in de repository: een test bewaakt dat.
 
-export const VERSIE = "0.4.0";
+export const VERSIE = "0.5.0";
 
 /** De MT per adres van de pagina. De productie komt erbij bij de livegang. */
 const OMGEVINGEN = Object.freeze({
@@ -31,8 +31,18 @@ export const UITSTAPPENTOOL = Object.freeze({
 /** De serverfunctie voor de accounts (functies/mt-accounts): de naam waaronder ze in Supabase staat (17.4). */
 export const ACCOUNTFUNCTIE = "mt-accounts";
 
+/**
+ * De versie van de serverfunctie die deze versie van de MT verwacht. De serverfunctie houdt het nummer
+ * van de levering waarin ze laatst wijzigde: enkel dan plakt Pablo ze opnieuw in Supabase. Staat er in
+ * Supabase een andere versie, dan zegt de MT dat.
+ */
+export const ACCOUNTFUNCTIE_VERSIE = "0.4.0";
+
+/** Het domein van de e-mailadressen van de school. Een ander adres mag, maar de MT vraagt het eerst na. */
+export const SCHOOLDOMEIN = "klimopvilvoorde.be";
+
 /** Het voorbeeld in het veld E-mailadres van het aanmeldscherm. */
-export const MAILVOORBEELD = "voornaam.familienaam@klimopvilvoorde.be";
+export const MAILVOORBEELD = "voornaam.familienaam@" + SCHOOLDOMEIN;
 
 /** De omgeving voor een adres (location.hostname), of null als het adres onbekend is. */
 export function omgeving(host) {

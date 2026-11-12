@@ -99,11 +99,11 @@ Deno.test("rpc: de soort fout volgt uit de code van de databank, en de tekst is 
   stel(PROJECT);
   stelToken(() => Promise.resolve("a.b.c"));
   const gevallen = [
-    [403, { code: "42501", message: "MT: geen rechten voor deze handeling" }, "rechten", "geen rechten voor deze handeling"],
-    [400, { code: "MT409", message: "MT: de lijst wijzigde intussen." }, "gewijzigd", "de lijst wijzigde intussen."],
-    [400, { code: "MT422", message: "MT: enkel een leerkracht heeft klassen" }, "kan_niet", "enkel een leerkracht heeft klassen"],
-    [400, { code: "MT429", message: "MT: te veel pogingen na elkaar." }, "te_veel", "te veel pogingen na elkaar."],
-    [400, { code: "22023", message: "MT: deze accounthandeling klopt niet" }, "oproep", "deze accounthandeling klopt niet"],
+    [403, { code: "42501", message: "MT: geen rechten voor deze handeling" }, "rechten", "Geen rechten voor deze handeling."],
+    [400, { code: "MT409", message: "MT: de lijst wijzigde intussen." }, "gewijzigd", "De lijst wijzigde intussen."],
+    [400, { code: "MT422", message: "MT: enkel een leerkracht heeft klassen" }, "kan_niet", "Enkel een leerkracht heeft klassen."],
+    [400, { code: "MT429", message: "MT: te veel pogingen na elkaar." }, "te_veel", "Te veel pogingen na elkaar."],
+    [400, { code: "22023", message: "MT: deze accounthandeling klopt niet" }, "oproep", "Deze accounthandeling klopt niet."],
     [401, { code: "PGRST301", message: "JWT expired" }, "sessie", "Je sessie is verlopen. Meld opnieuw aan."],
     [403, { code: "42501", message: "permission denied for function mt_account_stand" }, "rechten", "Je hebt geen rechten voor deze handeling."],
     [404, { code: "PGRST202", message: "Could not find the function" }, "ontbreekt", "De databank kent deze functie niet: een SQL-script is nog niet uitgevoerd."],
@@ -146,7 +146,7 @@ Deno.test("serverfunctie: de soort en de tekst van de functie, en wat er scheelt
   stelToken(() => Promise.resolve("a.b.c"));
   const gevallen = [
     [422, { ok: false, code: "kan_niet", melding: "Kies een ander wachtwoord dan je tijdelijke wachtwoord.", geblokkeerd: false }, "kan_niet", /ander wachtwoord/, false],
-    [403, { ok: false, code: "rechten", melding: "geen rechten voor deze handeling" }, "rechten", /geen rechten/, false],
+    [403, { ok: false, code: "rechten", melding: "geen rechten voor deze handeling" }, "rechten", /^Geen rechten voor deze handeling\.$/, false],
     [401, { ok: false, code: "sessie", melding: "Je sessie is verlopen. Meld opnieuw aan." }, "sessie", /verlopen/, false],
     [502, { ok: false, code: "supabase", melding: "Supabase stelde het wachtwoord niet in.", geblokkeerd: true }, "fout", /stelde het wachtwoord niet in/, true],
     [401, { code: 401, message: "Invalid JWT" }, "sessie", /verlopen/, false],
@@ -163,4 +163,106 @@ Deno.test("serverfunctie: de soort en de tekst van de functie, en wat er scheelt
   }
   stelToken(() => Promise.resolve(null));
   assert.equal((await serverfunctie("stand")).soort, "sessie");
+});
+
+// ---------- Tabellen lezen (stap 2b) ----------
+
+import { lees as leesTabel } from "../code/data.js";
+
+Deno.test("lezen: kolommen, filters en volgorde in de vraag, en een waarde wijzigt nooit de vraag zelf", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  let gezien = null;
+  const r = await metFetch(async (url, opties) => {
+    gezien = { url, opties };
+    return json(200, [{ id: 1 }]);
+  }, () => leesTabel("klassen", { kolommen: ["id", "naam"], waar: { schooljaar: "2026-2027", actief: true, id: ["a,b", 'c"d', "e)f"], leerjaar: null }, volgorde: ["volgorde", "id"] }));
+  assert.deepEqual(r, { ok: true, gegevens: [{ id: 1 }] });
+  const u = new URL(gezien.url);
+  assert.equal(u.origin + u.pathname, PROJECT.mt.url + "/rest/v1/klassen");
+  assert.equal(u.searchParams.get("select"), "id,naam");
+  assert.equal(u.searchParams.get("schooljaar"), "eq.2026-2027");
+  assert.equal(u.searchParams.get("actief"), "eq.true");
+  assert.equal(u.searchParams.get("id"), 'in.("a,b","c\\"d","e)f")');
+  assert.equal(u.searchParams.get("leerjaar"), "is.null");
+  assert.equal(u.searchParams.get("order"), "volgorde.asc,id.asc");
+  assert.equal(u.searchParams.get("limit"), "1000");
+  assert.equal(u.searchParams.get("offset"), "0");
+  assert.equal(gezien.opties.headers.Authorization, "Bearer a.b.c");
+  assert.equal(gezien.opties.headers.apikey, PROJECT.mt.sleutel);
+});
+
+Deno.test("lezen: een naam die geen naam is, gaat nooit naar de databank", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  let opgeroepen = 0;
+  const fout = [
+    ["gebruikers?select=*", { kolommen: ["id"], volgorde: ["id"] }],
+    ["gebruikers", { kolommen: ["id,wachtwoord"], volgorde: ["id"] }],
+    ["gebruikers", { kolommen: ["id"], waar: { "naam=eq.x&or": 1 }, volgorde: ["id"] }],
+    ["gebruikers", { kolommen: ["id"], volgorde: ["id.desc"] }],
+    ["gebruikers", { kolommen: [], volgorde: ["id"] }],
+    ["gebruikers", { kolommen: ["id"], volgorde: [] }],
+  ];
+  for (const [tabel, vraag] of fout) {
+    const r = await metFetch(async () => (opgeroepen++, json(200, [])), () => leesTabel(tabel, vraag));
+    assert.equal(r.soort, "oproep", tabel + " " + JSON.stringify(vraag));
+  }
+  assert.equal(opgeroepen, 0);
+  const leeg = await metFetch(async () => (opgeroepen++, json(200, [])), () => leesTabel("klassen", { kolommen: ["id"], waar: { id: [] }, volgorde: ["id"] }));
+  assert.deepEqual(leeg, { ok: true, gegevens: [] });
+  assert.equal(opgeroepen, 0, "een lege lijst van id's vroeg toch iets aan de databank");
+});
+
+Deno.test("lezen: meer dan duizend rijen komen in bladzijden, allemaal", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  const alle = Array.from({ length: 2300 }, (_, i) => ({ id: i }));
+  const gevraagd = [];
+  const r = await metFetch(async (url) => {
+    const u = new URL(url);
+    const vanaf = Number(u.searchParams.get("offset"));
+    gevraagd.push(vanaf);
+    return json(200, alle.slice(vanaf, vanaf + Number(u.searchParams.get("limit"))));
+  }, () => leesTabel("leerlingen", { kolommen: ["id"], volgorde: ["id"] }));
+  assert.equal(r.ok, true);
+  assert.equal(r.gegevens.length, 2300);
+  assert.deepEqual(gevraagd, [0, 1000, 2000]);
+  assert.equal(r.gegevens[2299].id, 2299);
+});
+
+Deno.test("lezen: niets terug is pas een lege lijst als de aanmelding nog in orde is (17.3)", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  const paden = [];
+  const leeg = await metFetch(async (url) => {
+    paden.push(new URL(url).pathname);
+    return url.includes("/rpc/mt_mijn_account") ? json(200, { naam: "Proef" }) : json(200, []);
+  }, () => leesTabel("klassen", { kolommen: ["id"], volgorde: ["id"] }));
+  assert.deepEqual(leeg, { ok: true, gegevens: [] });
+  assert.deepEqual(paden, ["/rest/v1/klassen", "/rest/v1/rpc/mt_mijn_account"]);
+  const geweigerd = await metFetch(async (url) => url.includes("/rpc/mt_mijn_account") ? json(403, { code: "42501", message: "MT: geen rechten voor deze handeling" }) : json(200, []),
+    () => leesTabel("klassen", { kolommen: ["id"], volgorde: ["id"] }));
+  assert.equal(geweigerd.ok, false);
+  assert.equal(geweigerd.soort, "rechten", "zonder rechten leek de lijst gewoon leeg");
+  let nagekeken = 0;
+  const gevuld = await metFetch(async (url) => (url.includes("/rpc/") ? (nagekeken++, json(200, {})) : json(200, [{ id: 1 }])), () => leesTabel("klassen", { kolommen: ["id"], volgorde: ["id"] }));
+  assert.equal(gevuld.gegevens.length, 1);
+  assert.equal(nagekeken, 0, "met rijen is de extra controle niet nodig: RLS toonde ze enkel aan wie binnen mag");
+});
+
+Deno.test("lezen: de soort fout, en zonder aanmelding gaat er niets naar de databank", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  for (const [status, soort] of [[401, "sessie"], [403, "rechten"], [404, "ontbreekt"], [500, "fout"]]) {
+    const r = await metFetch(async () => json(status, { message: "x" }), () => leesTabel("klassen", { kolommen: ["id"], volgorde: ["id"] }));
+    assert.equal(r.soort, soort, String(status));
+  }
+  const geenLijst = await metFetch(async () => json(200, { geen: "lijst" }), () => leesTabel("klassen", { kolommen: ["id"], volgorde: ["id"] }));
+  assert.equal(geenLijst.ok, false);
+  stelToken(() => Promise.resolve(null));
+  let opgeroepen = 0;
+  const r = await metFetch(async () => (opgeroepen++, json(200, [])), () => leesTabel("klassen", { kolommen: ["id"], volgorde: ["id"] }));
+  assert.equal(r.soort, "sessie");
+  assert.equal(opgeroepen, 0);
 });

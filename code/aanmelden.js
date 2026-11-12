@@ -1,4 +1,4 @@
-// MT · aanmelden.js · versie 0.4.0
+// MT · aanmelden.js · versie 0.5.0
 // Het aanmeldscherm (17.2, canvas: bord "Aanmelden met tweestapsverificatie"). De eerste keer vier
 // stappen: tijdelijk wachtwoord, eigen wachtwoord kiezen, app koppelen, code. Daarna twee: wachtwoord
 // en code. Welke stap volgt, beslist dit scherm niet zelf: het vraagt de stand van het account aan de
@@ -9,10 +9,10 @@
 
 import * as auth from "./auth.js";
 import * as data from "./data.js";
-import { ACCOUNTFUNCTIE, MAILVOORBEELD } from "./config.js";
+import { ACCOUNTFUNCTIE, ACCOUNTFUNCTIE_VERSIE, MAILVOORBEELD } from "./config.js";
 import { html, zet } from "./ui.js";
 
-export const VERSIE = "0.4.0";
+export const VERSIE = "0.5.0";
 
 // ---------- Welke stap volgt ----------
 
@@ -366,6 +366,10 @@ export function start({ kaart, appNaam, bericht = null, afmelden }) {
         return toonKanNiet("De serverfunctie ontbreekt", "De serverfunctie " + ACCOUNTFUNCTIE + " staat nog niet in Supabase, of onder een andere naam. Zonder haar kan niemand aanmelden.", true);
       }
       return toonKanNiet("Aanmelden lukt nu niet", s.tekst, true);
+    }
+    if (s.gegevens.versie !== ACCOUNTFUNCTIE_VERSIE) {
+      return toonKanNiet("De serverfunctie is niet bijgewerkt", "In Supabase staat versie " + (s.gegevens.versie || "onbekend") + " van de serverfunctie " + ACCOUNTFUNCTIE
+        + "; deze versie van de MT verwacht " + ACCOUNTFUNCTIE_VERSIE + ". Plak functies/" + ACCOUNTFUNCTIE + "/index.ts opnieuw in Supabase, bij Edge Functions.", true);
     }
     z.stand = s.gegevens;
     // "Aangemeld blijven" mag niet voor elke rol (B148): dan blijft de sessie in dit tabblad.

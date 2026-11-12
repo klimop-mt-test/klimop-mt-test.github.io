@@ -1,4 +1,4 @@
-// MT · auth.js · versie 0.4.0
+// MT · auth.js · versie 0.5.0
 // Aanmelden, de tweestapsverificatie en de sessie (17.2, T5). Het enige bestand dat supabase-js
 // gebruikt, en naast app.js het enige dat de opslag van de browser aanraakt. De bibliotheek staat in
 // de eigen repository (code/lib), op één vaste versie (B158); een test bewaakt haar controlesom.
@@ -12,7 +12,7 @@
 //   - anders in sessionStorage: enkel dit tabblad, weg bij het sluiten, en de MT meldt af na een tijd
 //     zonder activiteit.
 
-export const VERSIE = "0.4.0";
+export const VERSIE = "0.5.0";
 
 /** De sleutel van de sessie in de opslag. De MT heeft een eigen adres, dus geen andere tool leest ze (B72). */
 const SLEUTEL = "mt_auth";

@@ -7,7 +7,7 @@ Testversie van de MT, de maximumfactuur-tool van GO! basisschool Klim-Op. Enkel 
 | Map of bestand | Inhoud |
 |---|---|
 | `index.html` | de pagina |
-| `code/` | de werking, één bestand per taak: `app.js` de start, `config.js` de adressen, `ui.js` alles op het scherm, `data.js` de databank, `auth.js` de aanmelding en `aanmelden.js` het aanmeldscherm. In `code/lib/` staat supabase-js 2.116.0, het officiële bestand uit het npm-pakket, ongewijzigd, met zijn licentie |
+| `code/` | de werking, één bestand per taak: `app.js` de start, `config.js` de adressen, `ui.js` alles op het scherm, `data.js` de databank, `auth.js` de aanmelding, `aanmelden.js` het aanmeldscherm en `gebruikers.js` het scherm Gebruikers. In `code/lib/` staat supabase-js 2.116.0, het officiële bestand uit het npm-pakket, ongewijzigd, met zijn licentie |
 | `functies/` | de serverfunctie voor de accounts, `mt-accounts`: één bestand, dat je in Supabase plakt bij Edge Functions. De sleutel die ze gebruikt, geeft Supabase haar zelf: hij staat nergens in deze repository |
 | `opmaak/` | de huisstijl (`mt.css`), het logo, en het lettertype Outfit met zijn licentie |
 | `sql/` | de scripts voor Supabase, op volgorde: elk script voer je één keer uit in de SQL Editor, het volgende pas na het vorige |
