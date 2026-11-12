@@ -6,7 +6,8 @@
 //   2. elk script van sql/, op volgorde, als de rol postgres, zoals de SQL Editor van Supabase;
 //   3. het laatste script nog eens: herhaalbaar, met dezelfde uitkomst;
 //   4. elk ouder script nog eens: dat moet geweigerd worden, want het zou rechten terugzetten;
-//   5. tests/databank/proef.sql, in UTC en in de tijd van Brussel.
+//   5. tests/databank/proef.sql, in UTC en in de tijd van Brussel;
+//   6. de wedloop: twee verbindingen tegelijk, voor wat één verbinding niet kan tonen (review 1).
 //
 // Daarna, in een tweede test: de bewust ingebouwde fouten van tests/databank/fouten.js. Een controle
 // bewijst pas iets als ze ook afgaat wanneer het misloopt. Elke fout wordt apart in haar SQL-script
@@ -60,6 +61,58 @@ async function doe(programma, args, { env, stil = false } = {}) {
 }
 
 const pad = (bestand) => decodeURIComponent(new URL(bestand, MAP).pathname);
+
+/**
+ * De wedloop (review 1: I3 en I1): twee verbindingen tegelijk, zoals twee beheerders of twee tabbladen.
+ * De proef loopt in één verbinding en ziet dit niet. Elke verbinding meldt aan als de rol authenticator,
+ * zoals de Data API, met de tijdslimieten van het echte project.
+ *   1. beheerder A geeft B een nieuw wachtwoord, en op hetzelfde moment B aan A: precies één van beide
+ *      lukt, en precies één account is daarna geblokkeerd. Wie een handeling start, blijft zelf bruikbaar;
+ *   2. hetzelfde adres wordt twee keer tegelijk aangemaakt: precies één start lukt.
+ * voer(gebruiker, sql) voert SQL uit op de databank. Geeft null als alles klopt, anders wat misliep.
+ */
+async function wedloop(voer) {
+  const id = (n) => "00000000-0000-4000-8000-" + String(n).padStart(12, "0");
+  const [a, b, x] = [id(9001), id(9002), id(9003)];
+  const opzet = await voer("supabase_admin", `
+    insert into auth.users (id, email) values ('${a}', 'wedloop-a@voorbeeld.test'), ('${b}', 'wedloop-b@voorbeeld.test'), ('${x}', 'wedloop-x@voorbeeld.test');
+    insert into auth.mfa_factors (id, user_id, factor_type, status) select id, id, 'totp', 'verified' from auth.users where email like 'wedloop-%';
+    insert into auth.sessions (id, user_id, aal, factor_id) select id, id, 'aal2', id from auth.users where email like 'wedloop-%';
+    insert into auth.mfa_amr_claims (session_id, created_at, updated_at, authentication_method)
+      select u.id, now(), now(), m.methode from auth.users u, (values ('password'), ('totp')) as m(methode) where u.email like 'wedloop-%';
+    insert into public.gebruikers (id, naam, email, rol, actief, wachtwoord_tijdelijk, eerste_aanmelding_afgerond, app_koppelen, app_factor)
+      select id, 'Wedloop ' || right(email, 16), email, 'beheerder', true, false, true, false, id from auth.users where email like 'wedloop-%';`);
+  if (opzet.code !== 0) return "de opzet van de wedloop mislukte: " + opzet.fout;
+  const start = (wie, operatie, soort, voor, gegevens, slaap) => `
+    begin;
+    select set_config('request.jwt.claims', '${JSON.stringify({ sub: wie, role: "authenticated", aal: "aal2", session_id: wie })}', true);
+    set local role authenticated;
+    select public.mt_account_start('${id(operatie)}', '${soort}', ${voor ? "'" + voor + "'" : "null"}, '${JSON.stringify(gegevens)}');
+    select pg_sleep(${slaap});
+    commit;`;
+  const samen = async (eerste, tweede) => {
+    const r1 = voer("authenticator", eerste);
+    await new Promise((klaar) => setTimeout(klaar, 500));
+    const r2 = voer("authenticator", tweede);
+    return [await r1, await r2];
+  };
+  const tel = async (sql) => Number((await voer("supabase_admin", sql)).uit.trim());
+
+  const [ra, rb] = await samen(start(a, 9101, "tijdelijk_wachtwoord", b, {}, 1.5), start(b, 9102, "tijdelijk_wachtwoord", a, {}, 0));
+  const gelukt = [ra, rb].filter((r) => r.code === 0).length;
+  const geblokkeerd = await tel(`select count(*) from public.gebruikers where id in ('${a}', '${b}') and (open_operatie is not null or herstel_wachtwoord)`);
+  if (gelukt !== 1 || geblokkeerd !== 1) {
+    return "twee beheerders gaven elkaar tegelijk een nieuw wachtwoord: " + gelukt + " starts lukten en " + geblokkeerd + " accounts zijn geblokkeerd (verwacht: 1 en 1)";
+  }
+  if (!/42501|geen rechten/.test(ra.fout + rb.fout)) return "de tweede start werd niet geweigerd wegens geen rechten: " + ra.fout + rb.fout;
+
+  const nieuw = { naam: "Wedloop Nieuw", email: "wedloop-nieuw@voorbeeld.test", rol: "lezer" };
+  const [rc, rd] = await samen(start(x, 9103, "aanmaken", null, nieuw, 1.5), start(x, 9104, "aanmaken", null, nieuw, 0));
+  const starts = [rc, rd].filter((r) => r.code === 0).length;
+  const open = await tel(`select count(*) from public.account_operaties where soort = 'aanmaken' and afgerond_op is null and beginstand -> 'plan' ->> 'email' = '${nieuw.email}'`);
+  if (starts !== 1 || open !== 1) return "hetzelfde adres werd twee keer tegelijk aangemaakt: " + starts + " starts lukten, " + open + " staan open (verwacht: 1 en 1)";
+  return null;
+}
 
 Deno.test({
   name: "databank: de scripts op een nagebootste Supabase, herhaalbaar, en de proef in UTC en in Brussel",
@@ -121,6 +174,11 @@ Deno.test({
         assert.equal(r.code, 0, "de proef mislukte in " + tijdzone + ":\n" + r.uit + "\n" + r.fout);
         assert.match(r.uit, /\|\s+0\s*$/m, "de proef telt mislukte controles in " + tijdzone + ":\n" + r.uit);
       }
+
+      // 6. De wedloop: twee verbindingen tegelijk (review 1).
+      const voer = (gebruiker, sql) =>
+        doe(bin + "/psql", ["-X", "-q", "-t", "-A", "-v", "ON_ERROR_STOP=1", "-h", map, "-p", POORT, "-U", gebruiker, "-d", "postgres", "-c", sql], { env: { PGTZ: "UTC" } });
+      assert.equal(await wedloop(voer), null, "de wedloop");
     } finally {
       await doe(bin + "/pg_ctl", ["-D", gegevens, "-m", "immediate", "stop"], { stil: true });
       await Deno.remove(map, { recursive: true });
@@ -143,7 +201,7 @@ Deno.test({
       });
     const lukt = (r, wat) => assert.equal(r.code, 0, wat + " mislukte:\n" + r.fout + "\n" + r.uit);
     const nietGevonden = [];
-    const gevondenDoor = { "het script": 0, "een later script": 0, "de proef": 0 };
+    const gevondenDoor = { "het script": 0, "een later script": 0, "de proef": 0, "de wedloop": 0 };
 
     try {
       lukt(await doe(bin + "/initdb", ["-D", gegevens, "-U", "supabase_admin", "-A", "trust", "-E", "UTF8", "--locale=C.UTF-8"]), "initdb");
@@ -179,7 +237,10 @@ Deno.test({
               for (const later of scripts.slice(i + 1)) {
                 if ((await psql("postgres", databank, ["-f", pad(later)])).code !== 0) door = "een later script";
               }
-              if (!door) {
+              if (!door && f.wedloop) {
+                const voer = (gebruiker, sql) => psql(gebruiker, databank, ["-t", "-A", "-c", sql]);
+                if ((await wedloop(voer)) !== null) door = "de wedloop";
+              } else if (!door) {
                 const p = await psql("supabase_admin", databank, ["-f", pad("tests/databank/proef.sql")]);
                 if (p.code !== 0 || !/\|\s+0\s*$/m.test(p.uit)) door = "de proef";
               }
@@ -194,7 +255,8 @@ Deno.test({
 
       console.log(
         FOUTEN.length + " fouten ingebouwd; gevonden door het script: " + gevondenDoor["het script"] +
-          ", door een later script: " + gevondenDoor["een later script"] + ", door de proef: " + gevondenDoor["de proef"],
+          ", door een later script: " + gevondenDoor["een later script"] + ", door de proef: " + gevondenDoor["de proef"] +
+          ", door de wedloop: " + gevondenDoor["de wedloop"],
       );
       assert.deepEqual(nietGevonden, [], "niet gevonden: " + nietGevonden.join("; "));
     } finally {

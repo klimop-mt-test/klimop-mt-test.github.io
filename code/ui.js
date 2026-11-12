@@ -1,4 +1,4 @@
-// MT · ui.js · versie 0.5.1
+// MT · ui.js · versie 0.6.0
 // De gedeelde onderdelen van de schermen (17.1). Het enige bestand dat HTML in de pagina zet
 // (regel 4, 17.10). Een scherm stelt zijn opbouw samen met het sjabloon html`…`: elke ingevoegde
 // waarde wordt daarin standaard tekst, zodat een naam nooit als opmaak op het scherm komt. Enkel
@@ -7,7 +7,7 @@
 // de meldingen onderaan. Later komen hier de statuslabels, het ballonnetje van de materialentool, de
 // filterbalk, tabellen en bedragen.
 
-export const VERSIE = "0.5.1";
+export const VERSIE = "0.6.0";
 
 // ---------- Tekst en opmaak ----------
 
@@ -273,6 +273,19 @@ export function meld(tekst, soort = "") {
 }
 
 /** Een knop tijdens een actie (design system): niet opnieuw te klikken, met "Bezig met …". */
+/**
+ * Zet een venster vast terwijl een oproep loopt: geen veld en geen knop reageert nog, ook het kruisje
+ * niet. Zo wijzigt de invoer niet meer terwijl ze bewaard wordt (review 1, I7). Geeft de functie terug
+ * die alles weer vrijgeeft; wat al uit stond, blijft uit.
+ */
+export function bevries(el) {
+  const vast = [...el.querySelectorAll("button, input, select, textarea")].filter((e) => !e.disabled);
+  for (const e of vast) e.disabled = true;
+  return () => {
+    for (const e of vast) e.disabled = false;
+  };
+}
+
 export function knopBezig(knop, tekst) {
   if (!knop) return () => undefined;
   const vorig = knop.textContent;

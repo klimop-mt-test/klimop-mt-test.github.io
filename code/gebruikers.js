@@ -1,4 +1,4 @@
-// MT · gebruikers.js · versie 0.5.1
+// MT · gebruikers.js · versie 0.6.0
 // Het scherm Gebruikers (3, 15, B165, B170; canvas: bord "Gebruikers"): iedereen die kan aanmelden,
 // met de rol, de klassen per schooljaar en de stand van het account. Enkel voor een beheerder.
 //
@@ -13,9 +13,9 @@
 
 import * as data from "./data.js";
 import { ACCOUNTFUNCTIE, ACCOUNTFUNCTIE_VERSIE, SCHOOLDOMEIN } from "./config.js";
-import { datumEnUur, html, knopBezig, meld, venster, vraag, zet } from "./ui.js";
+import { bevries, datumEnUur, html, knopBezig, meld, venster, vraag, zet } from "./ui.js";
 
-export const VERSIE = "0.5.1";
+export const VERSIE = "0.6.0";
 
 // ---------- Zonder browser te testen ----------
 
@@ -55,7 +55,9 @@ export function resterend(tot, nu) {
  * "aandacht": de gebruiker kan nu niet gewoon aanmelden, en er is iets te doen.
  */
 export function toestandVan(g, nu) {
-  if (g.open_operatie) return { soort: "hangt", tekst: "Wijziging niet afgerond", kleur: "warn", aandacht: true };
+  // Een handeling die nog loopt, of een nieuw wachtwoord dat begonnen maar niet gelukt is (005): tot een
+  // beheerder het afrondt, kan de gebruiker niet aanmelden.
+  if (g.open_operatie || g.herstel_wachtwoord || g.herstel_app) return { soort: "hangt", tekst: "Wijziging niet afgerond", kleur: "warn", aandacht: true };
   if (!g.actief) return { soort: "uit", tekst: "Uitgeschakeld", kleur: "muted", aandacht: false };
   if (g.wachtwoord_tijdelijk) {
     const tot = g.tijdelijk_tot ? Date.parse(g.tijdelijk_tot) : 0;
@@ -106,7 +108,7 @@ export function overnemen(vorige, klassenNu) {
 }
 
 /** De rijen van de lijst: per gebruiker de stand, de klassen in het gekozen schooljaar en wat nog te koppelen is. */
-export function maakRijen({ gebruikers, toewijzingen, klassen, jaar, ik, nu }) {
+export function maakRijen({ gebruikers, toewijzingen, klassen, jaar, ik, nu, afwijkend = new Set() }) {
   const klasPerId = new Map(klassen.map((k) => [k.id, k]));
   return gebruikers.map((g) => {
     const eigenKlassen = jaar && g.rol === "leerkracht" ? klassenVan(g.id, jaar, toewijzingen, klasPerId) : [];
@@ -115,6 +117,8 @@ export function maakRijen({ gebruikers, toewijzingen, klassen, jaar, ik, nu }) {
       g,
       eigen: g.id === ik,
       toestand: toestandVan(g, nu),
+      // het e-mailadres bij Supabase verschilt van dat in de MT (review 1, O2)
+      afwijkend: afwijkend.has(g.id),
       klassen: eigenKlassen,
       teKoppelen,
       vorig: teKoppelen ? vorigeKlassen(g.id, jaar, toewijzingen, klasPerId) : null,
@@ -127,8 +131,16 @@ export function kiesRijen(rijen, { zoek = "", rol = "alle", toestand = "alle" })
   const z = norm(zoek);
   return rijen.filter((r) =>
     (rol === "alle" || r.g.rol === rol)
-    && (toestand === "alle" || (toestand === "koppelen" && r.teKoppelen) || (toestand === "aandacht" && r.toestand.aandacht))
+    && (toestand === "alle" || (toestand === "koppelen" && r.teKoppelen) || (toestand === "aandacht" && (r.toestand.aandacht || r.afwijkend)))
     && (!z || norm(r.g.naam + " " + r.g.email).includes(z)));
+}
+
+/**
+ * Hoeveel beheerders nu echt kunnen aanmelden en beheren (B214): actief, met een eigen wachtwoord en
+ * een gekoppelde app. Is dat er maar één, dan kan niemand in de MT hem nog helpen als hij vastloopt.
+ */
+export function bruikbareBeheerders(rijen) {
+  return rijen.filter((r) => r.g.rol === "beheerder" && r.toestand.soort === "actief").length;
 }
 
 /**
@@ -173,7 +185,7 @@ const gelijk = (a, b) => a.size === b.size && [...a].every((x) => b.has(x));
  */
 export function start({ deel, ik, terug, herstart }) {
   const s = {
-    laden: true, fout: null, gebruikers: [], schooljaren: [], klassen: [], toewijzingen: [], operaties: new Map(),
+    laden: true, fout: null, gebruikers: [], schooljaren: [], klassen: [], toewijzingen: [], operaties: new Map(), afwijkend: new Set(),
     rijen: [], jaren: [], jaar: null, zoek: "", rol: "alle", toestand: "alle", uren: 48,
   };
   let formNr = 0;
@@ -188,7 +200,7 @@ export function start({ deel, ik, terug, herstart }) {
       </div>
       <div class="ph-actions"><button class="btn btn-primary" type="button" data-doe="toevoegen">Gebruiker toevoegen</button></div>
     </div>
-    <p class="fwarn mt-melding" data-vak="waarschuwing" hidden></p>
+    <div data-vak="waarschuwing" hidden></div>
     <div class="card mt-filter">
       <label class="sr-only" for="gbZoek">Zoeken op naam of e-mailadres</label>
       <input id="gbZoek" class="ctrl" type="search" placeholder="Zoeken op naam of e-mailadres" autocomplete="off">
@@ -233,24 +245,26 @@ export function start({ deel, ik, terug, herstart }) {
   }
 
   function herreken() {
-    s.rijen = maakRijen({ gebruikers: s.gebruikers, toewijzingen: s.toewijzingen, klassen: s.klassen, jaar: s.jaar, ik, nu: Date.now() });
+    s.rijen = maakRijen({ gebruikers: s.gebruikers, toewijzingen: s.toewijzingen, klassen: s.klassen, jaar: s.jaar, ik, nu: Date.now(), afwijkend: s.afwijkend });
   }
 
   async function laad() {
     s.laden = true;
     s.fout = null;
     tekenLijst();
-    const [g, sj, k, t, stand] = await Promise.all([
+    const [g, sj, k, t, afw, stand] = await Promise.all([
       data.lees("gebruikers", {
-        kolommen: ["id", "naam", "email", "rol", "actief", "wachtwoord_tijdelijk", "tijdelijk_tot", "eerste_aanmelding_afgerond", "app_koppelen", "open_operatie"],
+        kolommen: ["id", "naam", "email", "rol", "actief", "wachtwoord_tijdelijk", "tijdelijk_tot", "eerste_aanmelding_afgerond", "app_koppelen", "open_operatie",
+          "herstel_wachtwoord", "herstel_app", "revisie"],
         volgorde: ["naam", "id"],
       }),
       data.lees("schooljaren", { kolommen: ["schooljaar", "stand"], volgorde: ["schooljaar"] }),
       data.lees("klassen", { kolommen: ["id", "schooljaar", "bron_id", "naam", "groep", "leerjaar", "actief", "volgorde"], volgorde: ["schooljaar", "volgorde", "naam", "id"] }),
       data.lees("klastoewijzingen", { kolommen: ["gebruiker_id", "klas_id", "schooljaar"], volgorde: ["gebruiker_id", "klas_id"] }),
+      data.rpc("mt_account_afwijkingen"),
       data.serverfunctie("stand"),
     ]);
-    const mis = [g, sj, k, t].find((antwoord) => !antwoord.ok);
+    const mis = [g, sj, k, t, afw].find((antwoord) => !antwoord.ok);
     if (mis) {
       if (!(await nogBinnen(mis))) return;
       s.laden = false;
@@ -261,6 +275,7 @@ export function start({ deel, ik, terug, herstart }) {
     s.gebruikers = g.gegevens;
     s.klassen = k.gegevens;
     s.toewijzingen = t.gegevens;
+    s.afwijkend = new Set(Array.isArray(afw.gegevens) ? afw.gegevens : []);
     // De schooljaren waarin klassen te koppelen zijn: het lopende, en een vorig dat nog open staat.
     s.jaren = sj.gegevens.filter((j) => j.stand === "lopend" || j.stand === "voorbij").sort((a, b) => (a.schooljaar < b.schooljaar ? 1 : -1));
     if (!s.jaren.some((j) => j.schooljaar === s.jaar)) {
@@ -273,17 +288,21 @@ export function start({ deel, ik, terug, herstart }) {
       const o = await data.lees("account_operaties", { kolommen: ["id", "soort", "begonnen_op", "afgerond_op", "resultaat"], waar: { id: open }, volgorde: ["id"] });
       if (o.ok) s.operaties = new Map(o.gegevens.map((x) => [x.id, x]));
     }
-    const waarschuwing = q('[data-vak="waarschuwing"]');
-    let tekst = "";
-    if (!stand.ok) tekst = "De serverfunctie " + ACCOUNTFUNCTIE + " antwoordt niet: een account toevoegen of wijzigen lukt nu niet. " + stand.tekst;
+    const teksten = [];
+    if (!stand.ok) teksten.push("De serverfunctie " + ACCOUNTFUNCTIE + " antwoordt niet: een account toevoegen of wijzigen lukt nu niet. " + stand.tekst);
     else if (stand.gegevens.versie !== ACCOUNTFUNCTIE_VERSIE) {
-      tekst = "In Supabase staat versie " + (stand.gegevens.versie || "onbekend") + " van de serverfunctie " + ACCOUNTFUNCTIE + "; deze versie van de MT verwacht "
-        + ACCOUNTFUNCTIE_VERSIE + ". Plak functies/" + ACCOUNTFUNCTIE + "/index.ts opnieuw in Supabase, bij Edge Functions.";
+      teksten.push("In Supabase staat versie " + (stand.gegevens.versie || "onbekend") + " van de serverfunctie " + ACCOUNTFUNCTIE + "; deze versie van de MT verwacht "
+        + ACCOUNTFUNCTIE_VERSIE + ". Plak functies/" + ACCOUNTFUNCTIE + "/index.ts opnieuw in Supabase, bij Edge Functions.");
     } else if (stand.gegevens.instellingen && stand.gegevens.instellingen.tijdelijk_wachtwoord_uren > 0) s.uren = stand.gegevens.instellingen.tijdelijk_wachtwoord_uren;
-    waarschuwing.textContent = tekst;
-    waarschuwing.hidden = !tekst;
     s.laden = false;
     herreken();
+    // Minder dan twee beheerders die echt kunnen aanmelden: elk verloren toestel wordt dan een noodprocedure (B214).
+    if (bruikbareBeheerders(s.rijen) < 2) {
+      teksten.push("Er is maar één beheerder die nu kan aanmelden. Verliest die zijn gsm of zijn wachtwoord, dan kan niemand hem in de MT helpen. Zorg voor een tweede beheerder die zijn aanmelding afgerond heeft.");
+    }
+    const waarschuwing = q('[data-vak="waarschuwing"]');
+    zet(waarschuwing, html`${teksten.map((tekst) => html`<p class="fwarn mt-melding">${tekst}</p>`)}`);
+    waarschuwing.hidden = !teksten.length;
     tekenFilters();
     tekenLijst();
   }
@@ -296,7 +315,7 @@ export function start({ deel, ik, terug, herstart }) {
       <span class="seg sm" role="group" aria-label="${label}">${opties.map(([waarde, tekst, aantal]) => html`<button type="button" class="${s[naam] === waarde ? "on" : ""}" aria-pressed="${s[naam] === waarde}" data-doe="${naam}" data-waarde="${waarde}">${tekst}${aantal === null ? null : html`<span class="c">${aantal}</span>`}</button>`)}</span>`;
     zet(q('[data-vak="filters"]'), html`
       ${groep("rol", "Rol", [["alle", "Iedereen", s.rijen.length], ["beheerder", "Beheerders", tel((r) => r.g.rol === "beheerder")], ["leerkracht", "Leerkrachten", tel((r) => r.g.rol === "leerkracht")], ["lezer", "Lezers", tel((r) => r.g.rol === "lezer")]])}
-      ${groep("toestand", "Toestand", [["alle", "Alle", null], ["koppelen", "Nog te koppelen", tel((r) => r.teKoppelen)], ["aandacht", "Account vraagt aandacht", tel((r) => r.toestand.aandacht)]])}
+      ${groep("toestand", "Toestand", [["alle", "Alle", null], ["koppelen", "Nog te koppelen", tel((r) => r.teKoppelen)], ["aandacht", "Account vraagt aandacht", tel((r) => r.toestand.aandacht || r.afwijkend)]])}
       ${s.jaren.length > 1 ? groep("jaar", "Schooljaar", s.jaren.map((j) => [j.schooljaar, j.schooljaar + (j.stand === "voorbij" ? " · nog open" : ""), null])) : null}`);
   }
 
@@ -345,7 +364,7 @@ export function start({ deel, ik, terug, herstart }) {
           <span class="mt-wie"><b>${r.g.naam}${r.eigen ? html` <span class="mt-jij">(jij)</span>` : null}</b><small>${r.g.email}</small></span>
           <span data-label="Rol"><span class="${"pill " + ROLKLEUR[r.g.rol]}">${ROLNAAM[r.g.rol]}</span></span>
           <span class="mt-klassen" data-label="Klassen">${klassenCel(r)}</span>
-          <span data-label="Account"><span class="${"pill " + r.toestand.kleur}">${r.toestand.tekst}</span></span>
+          <span data-label="Account"><span class="${"pill " + r.toestand.kleur}">${r.toestand.tekst}</span>${r.afwijkend ? html` <span class="pill warn">Adres wijkt af</span>` : null}</span>
           <span class="mt-actie">${r.eigen ? null : html`<button class="btn btn-ghost btn-sm" type="button" data-doe="wijzig" data-id="${r.g.id}">Wijzigen</button>`}</span>
         </div>`)}
       ${rijen.length ? null : html`<div class="mt-leeg">${s.rijen.length ? "Niemand voldoet aan deze filters." : "Er zijn nog geen gebruikers."}</div>`}
@@ -464,24 +483,41 @@ export function start({ deel, ik, terug, herstart }) {
 
   function toonWachtwoord({ naam, wachtwoord, geldig_tot, uren, app_gewist, nieuw, gebruiker }) {
     const termijn = geldig_tot ? "tot " + datumEnUur(Date.parse(geldig_tot)) : (uren || s.uren) + " uur";
+    // Wie het wachtwoord kopieerde, heeft het ook op het klembord staan: bij het sluiten maakt de MT dat leeg (review 1, O9).
+    let gekopieerd = false;
+    const wisKlembord = async () => {
+      if (!gekopieerd) return;
+      gekopieerd = false;
+      try {
+        await navigator.clipboard.writeText("");
+      } catch {
+        // het klembord is niet bereikbaar: de tekst in het venster zegt wat te doen
+      }
+    };
     const v = venster({
       titel: "Tijdelijk wachtwoord voor " + naam,
       inhoud: html`
         <p class="mt-ww">${wachtwoord}</p>
         <div class="mt-wwknop"><button class="btn btn-ghost btn-sm" type="button" data-doe="kopieer">Kopiëren</button><span class="hint" data-vak="gekopieerd" role="status"></span></div>
-        <p class="finfo">${"Geldig " + termijn + ". Geef het persoonlijk door aan " + naam + ". De MT toont het maar één keer en bewaart het niet: na het sluiten van dit venster is het weg."}</p>
+        <p class="finfo">${"Geldig " + termijn + ". Geef het persoonlijk door aan " + naam + ". De MT toont het maar één keer en bewaart het niet: na het sluiten van dit venster is het hier weg."}</p>
         <p class="hint">${naam + (nieuw || app_gewist
           ? " meldt aan met dit wachtwoord, kiest dan een eigen wachtwoord en koppelt de authenticator-app."
-          : " meldt aan met dit wachtwoord en kiest dan een eigen wachtwoord. De app blijft gekoppeld.")}</p>`,
+          : " meldt aan met dit wachtwoord en kiest dan een eigen wachtwoord. De app blijft gekoppeld.")}</p>
+        <p class="hint">Kopieer je het, dan maakt de MT het klembord weer leeg zodra je dit venster sluit. Gebruik je de klembordgeschiedenis van Windows (Windows-toets + V), wis het wachtwoord daar dan zelf.</p>`,
       voet: html`<button class="btn btn-primary" type="button" data-doe="klaar">Ik heb het doorgegeven</button>`,
       focus: '[data-doe="klaar"]',
+      magSluiten: async () => {
+        await wisKlembord();
+        return true;
+      },
       terugNaar: () => knopVan("wijzig", gebruiker) || knopVan("toevoegen"),
     });
-    v.el.querySelector('[data-doe="klaar"]').addEventListener("click", v.sluit);
+    v.el.querySelector('[data-doe="klaar"]').addEventListener("click", v.vraagSluiten);
     v.el.querySelector('[data-doe="kopieer"]').addEventListener("click", async () => {
       const vak = v.el.querySelector('[data-vak="gekopieerd"]');
       try {
         await navigator.clipboard.writeText(wachtwoord);
+        gekopieerd = true;
         vak.textContent = "Gekopieerd.";
       } catch {
         vak.textContent = "Kopiëren lukte niet: selecteer het wachtwoord en kopieer het zelf.";
@@ -489,12 +525,16 @@ export function start({ deel, ik, terug, herstart }) {
     });
   }
 
+  /** Geen antwoord gekregen: de uitkomst is dan niet bekend, want de wijziging kan toch gebeurd zijn (review 1, I2). */
+  const onbekend = (r) => r.soort === "verbinding" || Boolean(r.extra && r.extra.onbekend);
+
   // ---------- Gebruiker toevoegen ----------
 
   function openToevoegen() {
     const m = { naam: "", email: "", rol: "leerkracht", klassen: new Set() };
     const form = "gbForm" + ++formNr;
     const vuil = () => Boolean(m.naam.trim() || m.email.trim() || m.klassen.size);
+    let bezig = false;
     const v = venster({
       titel: "Gebruiker toevoegen",
       sub: "Het account krijgt een tijdelijk wachtwoord, dat je daarna één keer te zien krijgt. Bij de eerste aanmelding kiest de gebruiker een eigen wachtwoord en koppelt hij een authenticator-app.",
@@ -516,7 +556,7 @@ export function start({ deel, ik, terug, herstart }) {
             <div data-vak="klassen"></div></div>
         </form>`,
       voet: html`<button class="btn btn-ghost" type="button" data-doe="annuleer">Annuleren</button><button class="btn btn-primary" type="submit" form="${form}">Toevoegen</button>`,
-      magSluiten: () => !vuil() || vraag({ titel: "Niet toegevoegd", tekst: "Sluiten zonder de gebruiker toe te voegen?", ja: "Ja, sluiten", nee: "Nee, verder werken" }),
+      magSluiten: () => !bezig && (!vuil() || vraag({ titel: "Niet toegevoegd", tekst: "Sluiten zonder de gebruiker toe te voegen?", ja: "Ja, sluiten", nee: "Nee, verder werken" })),
       terugNaar: () => knopVan("toevoegen"),
     });
     const tekenKlassen = koppelKlassen(v, m, null);
@@ -526,24 +566,57 @@ export function start({ deel, ik, terug, herstart }) {
     v.el.querySelector('[data-doe="annuleer"]').addEventListener("click", v.vraagSluiten);
     v.el.querySelector("form").addEventListener("submit", async (gebeurtenis) => {
       gebeurtenis.preventDefault();
+      if (bezig) return;
+      // Eén vaste kopie van wat er nu staat: wat tijdens het toevoegen nog wijzigt, telt niet mee (review 1, I7).
       const k = keur(m);
+      const klassen = [...m.klassen];
       toonFouten(v, k.fouten);
       alarm(v, null);
       if (!k.ok) return;
       if (k.vreemd && !(await vreemdAdres(k.email))) return;
-      const klaar = knopBezig(v.el.querySelector('button[type="submit"]'), "Bezig met toevoegen…");
+      if (k.rol === "beheerder" && !(await vraag({
+        titel: k.naam + " wordt beheerder?",
+        tekst: "Een beheerder kan alles: alle klassen en bedragen, de instellingen, en de accounts van iedereen.",
+        ja: "Ja, toevoegen als beheerder",
+        nee: "Nee",
+      }))) return;
+      bezig = true;
+      const knop = v.el.querySelector('button[type="submit"]');
+      const klaar = knopBezig(knop, "Bezig met toevoegen…");
+      const los = bevries(v.el);
+      const vrij = () => {
+        los();
+        klaar();
+        bezig = false;
+        knop.focus();
+      };
       const r = await data.serverfunctie("aanmaken", { operatie: crypto.randomUUID(), naam: k.naam, email: k.email, rol: k.rol });
       if (!r.ok) {
-        klaar();
+        vrij();
         if (!(await nogBinnen(r))) return;
+        if (onbekend(r)) {
+          // Het account kan gemaakt zijn: de lijst zegt het. Het tijdelijke wachtwoord is in elk geval verloren.
+          await laad();
+          const gemaakt = s.gebruikers.find((x) => x.email === k.email);
+          if (gemaakt) {
+            v.sluit();
+            openWijzigen(gemaakt.id, k.naam + " staat in de lijst, maar het antwoord met het tijdelijke wachtwoord kwam niet aan. Geef hieronder een nieuw tijdelijk wachtwoord."
+              + (klassen.length ? " Kijk ook de klassen na." : ""));
+            return;
+          }
+          alarm(v, "Het antwoord kwam niet aan, en " + k.naam + " staat niet in de lijst. Probeer het opnieuw; lukt dat niet meteen, wacht dan drie minuten. Je gegevens blijven staan.");
+          return;
+        }
         alarm(v, "Niet toegevoegd. " + r.tekst + " Je gegevens blijven staan.");
+        laad();
         return;
       }
       let klasFout = null;
-      if (k.rol === "leerkracht" && s.jaar && m.klassen.size) {
-        const kr = await data.rpc("mt_klassen_toewijzen", { p_gebruiker: r.gegevens.gebruiker, p_schooljaar: s.jaar, p_klassen: [...m.klassen] });
+      if (k.rol === "leerkracht" && s.jaar && klassen.length) {
+        const kr = await data.rpc("mt_klassen_toewijzen", { p_gebruiker: r.gegevens.gebruiker, p_schooljaar: s.jaar, p_klassen: klassen, p_revisie: 1 });
         if (!kr.ok) klasFout = kr.tekst;
       }
+      bezig = false;
       v.sluit();
       await laad();
       toonWachtwoord({ naam: k.naam, ...r.gegevens, nieuw: true });
@@ -553,23 +626,30 @@ export function start({ deel, ik, terug, herstart }) {
 
   // ---------- Wijzigen ----------
 
-  function openWijzigen(id) {
+  function openWijzigen(id, bericht = null) {
     const rij = s.rijen.find((r) => r.g.id === id);
     if (!rij || rij.eigen) return;
     const g = rij.g;
     const begin = { naam: g.naam, email: g.email, rol: g.rol, klassen: new Set(rij.klassen.map((k) => k.id)) };
     const m = { naam: g.naam, email: g.email, rol: g.rol, klassen: new Set(begin.klassen) };
+    // De revisie die dit venster toont: wijzigde iemand anders de gebruiker intussen, dan bewaart de databank niets (review 1, I7).
+    let revisie = g.revisie;
+    let bezig = false;
     const klassenTellen = () => m.rol === "leerkracht" && Boolean(s.jaar);
     const vuil = () => keur(m).naam !== begin.naam || keur(m).email !== begin.email || m.rol !== begin.rol || (klassenTellen() && !gelijk(m.klassen, begin.klassen));
     const form = "gbForm" + ++formNr;
     const op = g.open_operatie ? s.operaties.get(g.open_operatie) : null;
-    const hangt = g.open_operatie
+    const herstel = Boolean(g.herstel_wachtwoord || g.herstel_app);
+    const hangt = herstel
+      ? "Een nieuw wachtwoord voor dit account is begonnen, maar niet gelukt. Tot dan kan " + g.naam + " niet aanmelden. Geef hieronder opnieuw een nieuw tijdelijk wachtwoord"
+        + (g.actief ? "" : ", met \"Weer inschakelen\"") + (g.herstel_app ? "; de app wordt daarbij opnieuw gekoppeld." : ".") + " Lukt dat niet meteen, probeer het dan na drie minuten opnieuw."
+      : g.open_operatie
       ? "Een wijziging aan dit account is niet afgerond" + (op ? ": " + (HANDELING[op.soort] || op.soort) + ", begonnen op " + datumEnUur(Date.parse(op.begonnen_op)) : "")
         + ". Tot dan kan " + g.naam + " niet aanmelden. Herhaal de handeling hieronder; lukt dat niet meteen, probeer het dan na drie minuten opnieuw."
       : null;
     const v = venster({
       titel: g.naam + " wijzigen",
-      sub: html`${g.email} · <span class="${"pill sm " + rij.toestand.kleur}">${rij.toestand.tekst}</span>`,
+      sub: html`${g.email} · <span class="${"pill sm " + rij.toestand.kleur}">${rij.toestand.tekst}</span>${rij.afwijkend ? html` <span class="pill sm warn">Adres wijkt af</span>` : null}`,
       breed: "mid",
       inhoud: html`
         <form id="${form}" class="mt-form" novalidate>
@@ -590,8 +670,10 @@ export function start({ deel, ik, terug, herstart }) {
         <div class="mt-account">
           <span class="flabel">Account</span>
           ${hangt ? html`<p class="warnbox">${hangt}</p>` : null}
+          ${rij.afwijkend ? html`<p class="warnbox">${"Bij Supabase staat dit account onder een ander e-mailadres dan hierboven, bv. na een wijziging die halverwege strandde. Aanmelden lukt dan enkel met dat andere adres. "}<button class="btn-link" type="button" data-doe="adres">${"E-mailadres opnieuw instellen op " + g.email}</button></p>` : null}
           <p class="fwarn" data-vak="eerst" hidden>Bewaar of annuleer eerst je wijzigingen hierboven.</p>
           <label class="check-row"><input type="checkbox" data-veld="app"> Ook de app opnieuw koppelen, bv. bij een nieuwe of verloren gsm</label>
+          <span class="hint" data-vak="appvast" hidden>De vorige poging vroeg om de app opnieuw te koppelen: dat blijft zo.</span>
           <div class="mt-accountknoppen">
             ${g.actief
               ? html`<button class="btn btn-ghost" type="button" data-actie="tijdelijk_wachtwoord">Nieuw tijdelijk wachtwoord</button><button class="btn-txt-del" type="button" data-actie="uitschakelen">Uitschakelen</button>`
@@ -602,7 +684,7 @@ export function start({ deel, ik, terug, herstart }) {
             : "Weer inschakelen geeft " + g.naam + " een nieuw tijdelijk wachtwoord."}</span>
         </div>`,
       voet: html`<button class="btn btn-ghost" type="button" data-doe="annuleer">Annuleren</button><button class="btn btn-primary" type="submit" form="${form}">Opslaan</button>`,
-      magSluiten: () => !vuil() || vraag({ titel: "Wijzigingen niet bewaard", tekst: "Sluiten zonder te bewaren?", ja: "Ja, sluiten", nee: "Nee, verder werken" }),
+      magSluiten: () => !bezig && (!vuil() || vraag({ titel: "Wijzigingen niet bewaard", tekst: "Sluiten zonder te bewaren?", ja: "Ja, sluiten", nee: "Nee, verder werken" })),
       terugNaar: () => knopVan("wijzig", g.id),
     });
     const tekenKlassen = koppelKlassen(v, m, g.id);
@@ -610,37 +692,86 @@ export function start({ deel, ik, terug, herstart }) {
     koppelRol(v, m, tekenKlassen);
     koppelVelden(v, m);
     v.el.querySelector('[data-doe="annuleer"]').addEventListener("click", v.vraagSluiten);
+    if (bericht) alarm(v, bericht);
+    // Moest de app na een vorige poging nog opnieuw, dan blijft dat zo: de databank doet het in elk geval (005).
+    const appVak = v.el.querySelector('[data-veld="app"]');
+    if (g.herstel_app) {
+      appVak.checked = true;
+      appVak.disabled = true;
+      v.el.querySelector('[data-vak="appvast"]').hidden = false;
+    }
+
+    /** Eén oproep, met het hele venster vast tot het antwoord er is. */
+    const metSlot = async (knop, tekst, werk) => {
+      bezig = true;
+      const klaar = knopBezig(knop, tekst);
+      const los = bevries(v.el);
+      const r = await werk();
+      los();
+      klaar();
+      bezig = false;
+      return r;
+    };
+    const nietBekend = "Het antwoord kwam niet aan: de uitkomst is niet bekend. De lijst is opnieuw geladen. Sluit dit venster en kijk de stand van " + g.naam
+      + " na: staat er \"Wijziging niet afgerond\" of \"Adres wijkt af\", herhaal dan de handeling.";
 
     // Opslaan: eerst de naam en de rol, dan de klassen, dan het e-mailadres. Wat lukte, blijft bewaard.
     v.el.querySelector("form").addEventListener("submit", async (gebeurtenis) => {
       gebeurtenis.preventDefault();
+      if (bezig) return;
+      // Eén vaste kopie van wat er nu staat: wat tijdens het bewaren nog wijzigt, telt niet mee (review 1, I7).
       const k = keur(m);
+      const klassen = [...m.klassen];
+      const metKlassen = klassenTellen() && !gelijk(m.klassen, begin.klassen);
       toonFouten(v, k.fouten);
       alarm(v, null);
       if (!k.ok) return;
       if (!vuil()) return v.sluit();
       const nieuwAdres = k.email !== begin.email;
       if (nieuwAdres && k.vreemd && !(await vreemdAdres(k.email))) return;
-      const klaar = knopBezig(v.el.querySelector('button[type="submit"]'), "Bezig met opslaan…");
+      // Een rol naar of van beheerder: eerst een bewuste vraag (review 1, O9).
+      if ((k.rol === "beheerder") !== (begin.rol === "beheerder")) {
+        const zeker = await vraag(k.rol === "beheerder"
+          ? { titel: g.naam + " wordt beheerder?", tekst: "Een beheerder kan alles: alle klassen en bedragen, de instellingen, en de accounts van iedereen.", ja: "Ja, beheerder maken", nee: "Nee" }
+          : { titel: g.naam + " is geen beheerder meer?", tekst: g.naam + " wordt " + ROLNAAM[k.rol].toLowerCase() + ", en kan de accounts en de instellingen daarna niet meer beheren.", ja: "Ja, rol wijzigen", nee: "Nee" });
+        if (!zeker) return;
+      }
+      bezig = true;
+      const knop = v.el.querySelector('button[type="submit"]');
+      const klaar = knopBezig(knop, "Bezig met opslaan…");
+      const los = bevries(v.el);
+      const vrij = () => {
+        los();
+        klaar();
+        bezig = false;
+      };
       const bewaard = [];
       const mislukt = async (wat, r) => {
-        klaar();
+        vrij();
         if (!(await nogBinnen(r))) return;
-        alarm(v, (bewaard.length ? "Bewaard: " + bewaard.join(", ") + ". " : "") + "Niet bewaard: " + wat + ". " + r.tekst
-          + (r.extra && r.extra.geblokkeerd ? " Het account blijft geblokkeerd tot je de handeling herhaalt." : ""));
+        const eerder = bewaard.length ? "Bewaard: " + bewaard.join(", ") + ". " : "";
+        if (r.soort === "gewijzigd" && wat !== "het e-mailadres") {
+          alarm(v, eerder + "Niet bewaard: " + wat + ". Iemand wijzigde " + g.naam + " intussen; er is niets overschreven. Sluit dit venster en open het opnieuw: dan zie je de huidige gegevens.");
+        } else if (onbekend(r)) {
+          alarm(v, eerder + "Het antwoord kwam niet aan: het is niet zeker of " + wat + " bewaard is. De lijst is opnieuw geladen. Sluit dit venster en kijk het na.");
+        } else {
+          alarm(v, eerder + "Niet bewaard: " + wat + ". " + r.tekst + (r.extra && r.extra.geblokkeerd ? " Het account blijft geblokkeerd tot je de handeling herhaalt." : ""));
+        }
         laad();
       };
       if (k.naam !== begin.naam || k.rol !== begin.rol) {
-        const r = await data.rpc("mt_gebruiker_wijzigen", { p_gebruiker: g.id, p_naam: k.naam, p_rol: k.rol });
+        const r = await data.rpc("mt_gebruiker_wijzigen", { p_gebruiker: g.id, p_naam: k.naam, p_rol: k.rol, p_revisie: revisie });
         if (!r.ok) return mislukt("de naam en de rol", r);
+        revisie = r.gegevens.revisie;
         begin.naam = k.naam;
         begin.rol = k.rol;
         bewaard.push("de naam en de rol");
       }
-      if (klassenTellen() && !gelijk(m.klassen, begin.klassen)) {
-        const r = await data.rpc("mt_klassen_toewijzen", { p_gebruiker: g.id, p_schooljaar: s.jaar, p_klassen: [...m.klassen] });
+      if (metKlassen && k.rol === "leerkracht") {
+        const r = await data.rpc("mt_klassen_toewijzen", { p_gebruiker: g.id, p_schooljaar: s.jaar, p_klassen: klassen, p_revisie: revisie });
         if (!r.ok) return mislukt("de klassen", r);
-        begin.klassen = new Set(m.klassen);
+        revisie = r.gegevens.revisie;
+        begin.klassen = new Set(klassen);
         bewaard.push("de klassen");
       }
       if (nieuwAdres) {
@@ -648,19 +779,48 @@ export function start({ deel, ik, terug, herstart }) {
         if (!r.ok) return mislukt("het e-mailadres", r);
         begin.email = k.email;
       }
+      bezig = false;
       v.sluit();
       meld("Bewaard.", "ok");
       laad();
     });
 
+    // Het adres bij Supabase weer gelijkzetten met dat van de MT (review 1, O2).
+    const adresKnop = v.el.querySelector('[data-doe="adres"]');
+    if (adresKnop) {
+      adresKnop.addEventListener("click", async () => {
+        if (bezig) return;
+        const eerst = v.el.querySelector('[data-vak="eerst"]');
+        eerst.hidden = !vuil();
+        if (vuil()) return;
+        if (!(await vraag({
+          titel: "E-mailadres opnieuw instellen?",
+          tekst: g.naam + " meldt daarna weer aan met " + g.email + ". Het wachtwoord en de app blijven dezelfde.",
+          ja: "Ja, opnieuw instellen",
+          nee: "Nee",
+        }))) return;
+        const r = await metSlot(adresKnop, "Bezig…", () => data.serverfunctie("email_wijzigen", { operatie: crypto.randomUUID(), gebruiker: g.id, email: g.email }));
+        if (!r.ok) {
+          if (!(await nogBinnen(r))) return;
+          alarm(v, onbekend(r) ? nietBekend : "Niet gelukt. " + r.tekst);
+          laad();
+          return;
+        }
+        v.sluit();
+        meld(g.naam + " meldt weer aan met " + g.email + ".", "ok");
+        laad();
+      });
+    }
+
     // Wat een wachtwoord of een koppeling raakt: telkens eerst een bewuste vraag.
     for (const knop of v.el.querySelectorAll("[data-actie]")) {
       knop.addEventListener("click", async () => {
+        if (bezig) return;
         const actie = knop.dataset.actie;
         const eerst = v.el.querySelector('[data-vak="eerst"]');
         eerst.hidden = !vuil();
         if (vuil()) return;
-        const app = v.el.querySelector('[data-veld="app"]').checked;
+        const app = appVak.checked;
         const teksten = {
           tijdelijk_wachtwoord: ["Nieuw tijdelijk wachtwoord voor " + g.naam + "?",
             "Het huidige wachtwoord van " + g.naam + " werkt daarna niet meer, en " + g.naam + " wordt overal afgemeld. "
@@ -674,14 +834,12 @@ export function start({ deel, ik, terug, herstart }) {
             "Ja, inschakelen"],
         }[actie];
         if (!(await vraag({ titel: teksten[0], tekst: teksten[1], ja: teksten[2], nee: "Nee" }))) return;
-        const klaar = knopBezig(knop, "Bezig…");
         const invoer = { operatie: crypto.randomUUID(), gebruiker: g.id };
         if (actie !== "uitschakelen") invoer.app_wissen = app;
-        const r = await data.serverfunctie(actie, invoer);
+        const r = await metSlot(knop, "Bezig…", () => data.serverfunctie(actie, invoer));
         if (!r.ok) {
-          klaar();
           if (!(await nogBinnen(r))) return;
-          alarm(v, "Niet gelukt. " + r.tekst + (r.extra && r.extra.geblokkeerd ? " Het account blijft geblokkeerd tot je de handeling herhaalt." : ""));
+          alarm(v, onbekend(r) ? nietBekend : "Niet gelukt. " + r.tekst + (r.extra && r.extra.geblokkeerd ? " Het account blijft geblokkeerd tot je de handeling herhaalt." : ""));
           laad();
           return;
         }
@@ -704,10 +862,15 @@ export function start({ deel, ik, terug, herstart }) {
       return;
     }
     const klaar = knopBezig(knop, "bezig…");
-    const r = await data.rpc("mt_klassen_toewijzen", { p_gebruiker: id, p_schooljaar: s.jaar, p_klassen: over.ids });
+    const r = await data.rpc("mt_klassen_toewijzen", { p_gebruiker: id, p_schooljaar: s.jaar, p_klassen: over.ids, p_revisie: rij.g.revisie });
     if (!r.ok) {
       klaar();
       if (!(await nogBinnen(r))) return;
+      if (r.soort === "gewijzigd") {
+        meld("Niet overgenomen: iemand wijzigde " + rij.g.naam + " intussen. De lijst is opnieuw geladen.", "err");
+        laad();
+        return;
+      }
       meld("Niet overgenomen. " + r.tekst, "err");
       return;
     }

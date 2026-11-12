@@ -11,5 +11,9 @@ Testversie van de MT, de maximumfactuur-tool van GO! basisschool Klim-Op. Enkel 
 | `functies/` | de serverfunctie voor de accounts, `mt-accounts`: één bestand, dat je in Supabase plakt bij Edge Functions. De sleutel die ze gebruikt, geeft Supabase haar zelf: hij staat nergens in deze repository |
 | `opmaak/` | de huisstijl (`mt.css`), het logo, en het lettertype Outfit met zijn licentie |
 | `sql/` | de scripts voor Supabase, op volgorde: elk script voer je één keer uit in de SQL Editor, het volgende pas na het vorige |
-| `tests/` | de automatische tests; `tests/databank/` bootst Supabase na en bevat de proef op de databank en de lijst van bewust ingebouwde fouten, met enkel verzonnen gegevens |
+| `tests/` | de automatische tests; `tests/databank/` bootst Supabase na en bevat de proef op de databank en de lijst van bewust ingebouwde fouten, met enkel verzonnen gegevens. De databanktest speelt ook een wedloop na: twee verbindingen tegelijk |
 | `.github/` | de tests en de keep-alive in GitHub Actions |
+
+## Eén vaste regel voor deze organisatie
+
+In de organisatie van de MT staat **nooit een tweede repository met GitHub Pages**, niet in die van de testversie en niet in die van de echte MT. Een tweede repository met Pages komt op hetzelfde adres te staan, in een submap. De browser ziet dat als dezelfde website: zo'n pagina kan de aanmelding van de MT lezen, en haar scripts mogen volgens de beveiliging van de MT (de CSP) gewoon draaien. De scheiding van de MT met de andere tools (B72) houdt dus enkel stand zolang hier niets anders met Pages staat.

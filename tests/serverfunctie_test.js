@@ -34,34 +34,44 @@ function nep() {
     logboek: [],
     auth: new Map(), // id → { id, email, wachtwoord, ban, bevestigd, factoren }
     sessies: new Map(), // token → { gebruiker, aal, methodes }
-    mt: new Map(), // id → { naam, email, rol, actief, tijdelijk, tot, eerste, app, open }
+    mt: new Map(), // id → { naam, email, rol, actief, tijdelijk, tot, eerste, app, open, herstelW, herstelA, factor }
     ops: new Map(), // id → { soort, door, voor, plan, begonnen, afgerond, resultaat, melding }
     storing: null, // (oproep) → Response of niets: om een fout bij Supabase na te bootsen
+    verlies: null, // (oproep) → true: de oproep wordt uitgevoerd, maar het antwoord gaat verloren
     volgend: 500,
   };
 
   s.account = (n, email, wachtwoord, mt = null, factoren = []) => {
     s.auth.set(ID(n), { id: ID(n), email, wachtwoord, ban: null, bevestigd: true, factoren });
-    if (mt) s.mt.set(ID(n), { naam: "Proef " + n, email, rol: "leerkracht", actief: true, tijdelijk: false, tot: null, eerste: true, app: false, open: null, ...mt });
+    if (mt) {
+      const g = { naam: "Proef " + n, email, rol: "leerkracht", actief: true, tijdelijk: false, tot: null, eerste: true, app: false, open: null, herstelW: false, herstelA: false, factor: null, ...mt };
+      // Wie volledig aangemeld is, heeft de app die telt: zijn gekoppelde app (005).
+      const gekoppeld = factoren.find((f) => f.factor_type === "totp" && f.status === "verified");
+      if (g.eerste && !g.app && g.factor === null && gekoppeld) g.factor = gekoppeld.id;
+      s.mt.set(ID(n), g);
+    }
     return ID(n);
   };
-  s.sessie = (n, aal = "aal2", methodes = ["password", "totp"]) => {
-    const claims = { sub: ID(n), aal, amr: methodes.map((method) => ({ method, timestamp: Math.floor(s.nu / 1000) })) };
+  /** Een sessie: het toegangsbewijs noemt haar id; de app waarmee de code gegeven werd, staat bij de sessie zelf. */
+  s.sessie = (n, aal = "aal2", methodes = ["password", "totp"], factor = undefined) => {
+    const id = ID(7000 + s.sessies.size);
+    const claims = { sub: ID(n), aal, session_id: id, amr: methodes.map((method) => ({ method, timestamp: Math.floor(s.nu / 1000) })) };
     const token = b64('{"alg":"ES256"}') + "." + b64(JSON.stringify(claims)) + "." + b64("handtekening" + s.sessies.size);
-    s.sessies.set(token, { gebruiker: ID(n), aal, methodes });
+    const app = ((s.auth.get(ID(n)) ?? {}).factoren ?? []).find((f) => f.factor_type === "totp");
+    s.sessies.set(token, { id, gebruiker: ID(n), aal, methodes, factor: factor !== undefined ? factor : aal === "aal2" && app ? app.id : null });
     return token;
   };
 
   const json = (status, lichaam) => new Response(JSON.stringify(lichaam), { status, headers: { "Content-Type": "application/json" } });
   const pg = (code, message, status = 400) => Object.assign(new Error(message), { antwoord: json(status, { code, message: "MT: " + message }) });
-  const inOrde = (g) => !!g && g.actief && g.eerste && !g.tijdelijk && !g.app && !g.open;
+  const inOrde = (g) => !!g && g.actief && g.eerste && !g.tijdelijk && !g.app && !g.open && !g.herstelW && !g.herstelA;
   const eisServer = (ctx) => {
     if (ctx.rol !== "service_role") throw pg("42501", "enkel voor de serverfunctie van de accounts", 403);
   };
   const eisBeheerder = (ctx) => {
     const z = ctx.sessie;
     const g = z ? s.mt.get(z.gebruiker) : null;
-    if (!z || z.aal !== "aal2" || !z.methodes.includes("totp") || !z.methodes.includes("password") || !inOrde(g) || g.rol !== "beheerder") {
+    if (!z || z.aal !== "aal2" || !z.methodes.includes("totp") || !z.methodes.includes("password") || !inOrde(g) || g.factor !== z.factor || g.rol !== "beheerder") {
       throw pg("42501", "geen rechten voor deze handeling", 403);
     }
     return z.gebruiker;
@@ -75,7 +85,7 @@ function nep() {
       if (!g) return { bekend: false, instellingen: instellingen() };
       return {
         bekend: true,
-        account: { id: a.p_gebruiker, naam: g.naam, rol: g.rol, actief: g.actief, wachtwoord_tijdelijk: g.tijdelijk, tijdelijk_verlopen: g.tijdelijk && !(g.tot > s.nu), eerste_aanmelding_afgerond: g.eerste, app_koppelen: g.app, bezig: g.open !== null },
+        account: { id: a.p_gebruiker, naam: g.naam, rol: g.rol, actief: g.actief, wachtwoord_tijdelijk: g.tijdelijk, tijdelijk_verlopen: g.tijdelijk && !(g.tot > s.nu), eerste_aanmelding_afgerond: g.eerste, app_koppelen: g.app, bezig: g.open !== null || g.herstelW || g.herstelA },
         instellingen: instellingen(),
       };
     },
@@ -84,7 +94,7 @@ function nep() {
       const g = s.mt.get(a.p_gebruiker);
       if (!g) throw pg("42501", "dit account heeft geen toegang tot de MT", 403);
       if (!g.actief) throw pg("MT422", "dit account is uitgeschakeld");
-      if (g.open) throw pg("MT409", "er loopt nog een wijziging aan dit account.");
+      if (g.open || g.herstelW || g.herstelA) throw pg("MT409", "er loopt nog een wijziging aan dit account.");
       if (!g.tijdelijk) throw pg("MT422", "dit account heeft geen tijdelijk wachtwoord");
       if (!(g.tot > s.nu)) throw pg("MT422", "je tijdelijke wachtwoord is verlopen. Vraag een nieuw aan de beheerder of het secretariaat.");
       if (s.ops.has(a.p_operatie)) throw pg("MT409", "deze handeling is al gestart");
@@ -101,8 +111,14 @@ function nep() {
         const email = String(a.p_gegevens.email).trim().toLowerCase();
         if (![...s.mt.values()].every((g) => g.email !== email)) throw pg("MT422", "er bestaat al een gebruiker met dit e-mailadres");
         if (!["beheerder", "leerkracht", "lezer"].includes(a.p_gegevens.rol)) throw pg("MT422", "kies een rol: beheerder, leerkracht of lezer");
+        // Zoals 005: een account bij Supabase met dit adres is ofwel van een gebruiker van de MT (geweigerd),
+        // ofwel los: dan komt het in het plan, en enkel dat account mag de serverfunctie overnemen.
+        const bij = [...s.auth.values()].filter((x) => x.email === email);
+        if (bij.length === 1 && s.mt.has(bij[0].id)) throw pg("MT422", "bij Supabase hoort dit e-mailadres al bij een gebruiker van de MT.");
+        if ([...s.ops.values()].some((op) => op.soort === "aanmaken" && !op.afgerond && op.plan.email === email)) throw pg("MT409", "dit account wordt al aangemaakt.");
         Object.assign(plan, { naam: String(a.p_gegevens.naam).trim(), email, rol: a.p_gegevens.rol });
-        uit = { email };
+        if (bij.length === 1) plan.bestaand = bij[0].id;
+        uit = { email, bestaand: plan.bestaand ?? null };
       } else {
         const g = s.mt.get(a.p_voor);
         if (!g) throw pg("MT422", "dit account bestaat niet in de MT");
@@ -110,12 +126,19 @@ function nep() {
         if (g.open && !s.ops.get(g.open).afgerond) throw pg("MT409", "er loopt al een wijziging aan dit account.");
         if (a.p_soort === "tijdelijk_wachtwoord" && !g.actief) throw pg("MT422", "dit account is uitgeschakeld. Schakel het eerst weer in.");
         if (a.p_soort === "inschakelen" && g.actief) throw pg("MT422", "dit account is al actief");
-        if (a.p_soort === "tijdelijk_wachtwoord" || a.p_soort === "inschakelen") plan.app_wissen = a.p_gegevens.app_wissen === true;
-        if (a.p_soort === "email_wijzigen") plan.email = String(a.p_gegevens.email).trim().toLowerCase();
+        // Een plan wordt enkel strenger: moest de app nog opnieuw, dan ook nu (B2).
+        if (a.p_soort === "tijdelijk_wachtwoord" || a.p_soort === "inschakelen") plan.app_wissen = a.p_gegevens.app_wissen === true || g.herstelA;
+        if (a.p_soort === "email_wijzigen") {
+          plan.email = String(a.p_gegevens.email).trim().toLowerCase();
+          if ([...s.mt.entries()].some(([id, x]) => x.email === plan.email && id !== a.p_voor)) throw pg("MT422", "er bestaat al een gebruiker met dit e-mailadres");
+          if ([...s.auth.values()].some((x) => x.email === plan.email && x.id !== a.p_voor)) throw pg("MT422", "bij Supabase bestaat al een account met dit e-mailadres");
+        }
         uit = { gebruiker: a.p_voor, email: g.email, actief: g.actief, ...plan };
         if (a.p_soort === "email_wijzigen") Object.assign(uit, { email: g.email, email_nieuw: plan.email });
         g.open = a.p_operatie;
         if (a.p_soort === "uitschakelen") g.actief = false;
+        if (a.p_soort !== "email_wijzigen") g.herstelW = true;
+        if (plan.app_wissen) g.herstelA = true;
       }
       s.ops.set(a.p_operatie, { soort: a.p_soort, door: wie, voor: a.p_voor, plan, afgerond: false });
       return { ...uit, operatie: a.p_operatie, soort: a.p_soort, uren: 48 };
@@ -124,54 +147,68 @@ function nep() {
       eisServer(ctx);
       const op = s.ops.get(a.p_operatie);
       if (!op) throw pg("22023", "deze handeling bestaat niet");
-      if (op.afgerond) throw pg("MT409", "deze handeling is al afgerond of vervangen");
+      // Herhalen mag (I2): dezelfde uitkomst geeft hetzelfde antwoord; een andere blijft een conflict.
+      if (op.afgerond) {
+        if (op.resultaat === (a.p_gelukt ? "gelukt" : "mislukt") && (op.soort !== "aanmaken" || !a.p_gelukt || a.p_gegevens.gebruiker === op.voor)) return { ...op.antwoord, herhaald: true };
+        throw pg("MT409", "deze handeling is al afgerond of vervangen");
+      }
       const g = op.voor ? s.mt.get(op.voor) : null;
       if (g && g.open !== a.p_operatie) throw pg("MT409", "deze handeling is vervangen door een nieuwe");
       if (!a.p_gelukt) {
-        Object.assign(op, { afgerond: true, resultaat: "mislukt", melding: a.p_melding });
         const vrij = ["wachtwoord_kiezen", "email_wijzigen"].includes(op.soort);
         if (g && vrij) g.open = null;
-        return { ok: false, gebruiker: op.voor, geblokkeerd: !!g && !vrij };
+        Object.assign(op, { afgerond: true, resultaat: "mislukt", melding: a.p_melding, antwoord: { ok: false, gebruiker: op.voor, geblokkeerd: !!g && !vrij } });
+        return op.antwoord;
       }
       const tot = s.nu + 48 * 3600 * 1000;
+      const wist = op.plan.app_wissen === true;
       if (op.soort === "aanmaken") {
         const id = a.p_gegevens.gebruiker;
         const bij = s.auth.get(id);
         if (!bij || bij.email !== op.plan.email) throw pg("MT422", "het account bij Supabase klopt niet met de aanvraag");
+        if (op.plan.bestaand && op.plan.bestaand !== id) throw pg("MT422", "het account bij Supabase klopt niet met de aanvraag");
         if (s.mt.has(id)) throw pg("MT422", "dit account of dit e-mailadres bestaat al in de MT");
-        s.mt.set(id, { naam: op.plan.naam, email: op.plan.email, rol: op.plan.rol, actief: true, tijdelijk: true, tot, eerste: false, app: true, open: null });
+        s.mt.set(id, { naam: op.plan.naam, email: op.plan.email, rol: op.plan.rol, actief: true, tijdelijk: true, tot, eerste: false, app: true, open: null, herstelW: false, herstelA: false, factor: null });
         op.voor = id;
-      } else if (op.soort === "tijdelijk_wachtwoord") Object.assign(g, { tijdelijk: true, tot, app: g.app || op.plan.app_wissen, open: null });
-      else if (op.soort === "uitschakelen") Object.assign(g, { actief: false, tijdelijk: true, tot: s.nu, open: null });
-      else if (op.soort === "inschakelen") Object.assign(g, { actief: true, tijdelijk: true, tot, app: g.app || op.plan.app_wissen, open: null });
+      } else if (op.soort === "tijdelijk_wachtwoord" || op.soort === "inschakelen") {
+        Object.assign(g, { actief: true, tijdelijk: true, tot, app: g.app || wist, factor: wist ? null : g.factor, herstelW: false, herstelA: wist ? false : g.herstelA, open: null });
+      } else if (op.soort === "uitschakelen") Object.assign(g, { actief: false, tijdelijk: true, tot: s.nu, herstelW: false, open: null });
       else if (op.soort === "email_wijzigen") Object.assign(g, { email: op.plan.email, open: null });
       else Object.assign(g, { tijdelijk: false, tot: null, open: null });
-      Object.assign(op, { afgerond: true, resultaat: "gelukt" });
-      return { ok: true, gebruiker: op.voor, tijdelijk_tot: new Date(tot).toISOString() };
+      Object.assign(op, { afgerond: true, resultaat: "gelukt", antwoord: { ok: true, gebruiker: op.voor, tijdelijk_tot: new Date(tot).toISOString() } });
+      return op.antwoord;
     },
     mt_account_afgerond(a, ctx) {
       eisServer(ctx);
       const g = s.mt.get(a.p_gebruiker);
       if (!g) throw pg("42501", "dit account heeft geen toegang tot de MT", 403);
       if (g.tijdelijk) throw pg("MT422", "kies eerst je eigen wachtwoord");
-      if (g.open) throw pg("MT409", "er loopt nog een wijziging aan dit account.");
-      const al = g.eerste && !g.app;
-      Object.assign(g, { eerste: true, app: false });
-      return { ok: true, al_afgerond: al };
+      if (g.open || g.herstelW || g.herstelA) throw pg("MT409", "er loopt nog een wijziging aan dit account.");
+      if (g.eerste && !g.app) return { ok: true, al_afgerond: true };
+      // Zoals 005: de databank leest zelf met welke app deze sessie haar code gaf, en of die app echt gekoppeld is.
+      const z = [...s.sessies.values()].find((x) => x.id === a.p_sessie && x.gebruiker === a.p_gebruiker && x.aal === "aal2");
+      const app = z ? s.auth.get(a.p_gebruiker).factoren.find((f) => f.id === z.factor && f.factor_type === "totp" && f.status === "verified") : null;
+      if (!app) throw pg("MT422", "je authenticator-app is nog niet gekoppeld");
+      Object.assign(g, { eerste: true, app: false, factor: app.id });
+      return { ok: true, al_afgerond: false };
     },
   };
 
-  s.haal = async (adres, opties) => {
+  const haalEcht = async (adres, opties) => {
     const u = new URL(adres);
     const koppen = opties.headers ?? {};
     const drager = typeof koppen.Authorization === "string" ? koppen.Authorization.replace(/^Bearer /, "") : null;
     const lichaam = opties.body ? JSON.parse(opties.body) : null;
-    const oproep = { methode: opties.method, adres, pad: u.pathname + u.search, apikey: koppen.apikey ?? null, drager, lichaam };
+    const oproep = { methode: opties.method, adres, pad: u.pathname + u.search, apikey: koppen.apikey ?? null, drager, lichaam, omleiding: opties.redirect ?? "follow" };
     s.oproepen.push(oproep);
     if (s.storing) {
       const eerst = s.storing(oproep);
       if (eerst === "weg") throw new TypeError("geen netwerk");
-      if (eerst) return eerst;
+      if (eerst) {
+        // Zoals fetch met redirect: "error": een omleiding is een fout, en wordt nooit gevolgd.
+        if (eerst.status >= 300 && eerst.status < 400 && opties.redirect === "error") throw new TypeError("een omleiding");
+        return eerst;
+      }
     }
     if (u.origin !== URL_MT) return json(404, {});
     const pad = u.pathname;
@@ -219,7 +256,8 @@ function nep() {
           for (const [token, z] of s.sessies) if (z.gebruiker === a.id) s.sessies.delete(token); // zoals Supabase: alle sessies weg
         }
         if (lichaam.email !== undefined) {
-          if ([...s.auth.values()].some((x) => x.email === lichaam.email && x.id !== a.id)) return json(422, { error_code: "email_exists" });
+          // Zoals Supabase: de beheerroute kijkt een dubbel adres niet zelf na, en strandt op de databank (O18).
+          if ([...s.auth.values()].some((x) => x.email === lichaam.email && x.id !== a.id)) return json(500, { error_code: "unexpected_failure" });
           a.email = lichaam.email;
         }
         if (lichaam.email_confirm === true) a.bevestigd = true;
@@ -229,6 +267,8 @@ function nep() {
       if (delen[2] === "factors" && delen.length === 3 && opties.method === "GET") return json(200, a.factoren);
       if (delen[2] === "factors" && delen.length === 4 && opties.method === "DELETE") {
         a.factoren = a.factoren.filter((f) => f.id !== delen[3]);
+        // Zoals Supabase: de sessies met die app blijven bestaan, maar zakken naar één stap (O7).
+        for (const z of s.sessies.values()) if (z.gebruiker === a.id && z.factor === delen[3]) Object.assign(z, { aal: "aal1", factor: null, methodes: z.methodes.filter((m) => m !== "totp") });
         return json(200, { id: delen[3] });
       }
       return json(404, {});
@@ -247,6 +287,12 @@ function nep() {
     return json(404, {});
   };
 
+  s.haal = async (adres, opties) => {
+    const antwoord = await haalEcht(adres, opties);
+    if (s.verlies && s.verlies(s.oproepen.at(-1))) throw new TypeError("het antwoord ging verloren");
+    return antwoord;
+  };
+
   s.behandel = maakBehandelaar({
     url: URL_MT,
     publiek: PUBLIEK,
@@ -255,6 +301,7 @@ function nep() {
     meld: (regel) => s.logboek.push(JSON.stringify(regel)),
     wacht: () => Promise.resolve(),
     willekeurig: (aantal) => crypto.getRandomValues(new Uint8Array(aantal)),
+    nu: () => s.nu,
   });
 
   /** Eén oproep van de pagina. Geeft { status, lichaam, koppen }. */
@@ -281,6 +328,7 @@ function nep() {
     for (const o of s.oproepen) {
       assert.ok(o.adres.startsWith(URL_MT + "/"), "een oproep ging naar een ander adres: " + o.adres);
       assert.ok(!o.adres.includes(GEHEIM), "de secret key staat in een adres");
+      assert.equal(o.omleiding, "error", "een oproep zou een omleiding volgen: " + o.pad);
       if (o.apikey === GEHEIM) assert.match(o.pad, /^\/(auth\/v1\/admin\/|rest\/v1\/rpc\/mt_account_(stand|eigen_start|klaar|afgerond)$)/, "de secret key ging mee naar " + o.pad);
     }
   };
@@ -424,7 +472,7 @@ Deno.test("eigen wachtwoord: gekozen, alle sessies weg, en nergens bewaard of ge
   assert.deepEqual(r.lichaam, { ok: true, opnieuw_aanmelden: true });
   assert.equal(s.auth.get(ID(3)).wachtwoord, "mijn eigen lange zin 7");
   assert.equal(s.sessies.has(token), false, "de oude sessie leeft nog");
-  assert.deepEqual({ ...s.mt.get(ID(3)) }, { naam: "Proef 3", email: "nieuw@voorbeeld.test", rol: "leerkracht", actief: true, tijdelijk: false, tot: null, eerste: false, app: true, open: null });
+  assert.deepEqual({ ...s.mt.get(ID(3)) }, { naam: "Proef 3", email: "nieuw@voorbeeld.test", rol: "leerkracht", actief: true, tijdelijk: false, tot: null, eerste: false, app: true, open: null, herstelW: false, herstelA: false, factor: null });
   assert.deepEqual(padenVan(s), [
     "GET /auth/v1/user",
     "POST /rest/v1/rpc/mt_account_stand",
@@ -505,8 +553,14 @@ Deno.test("afronden: enkel met de code, en enkel als de app bij Supabase echt ge
   const r = await s.vraag(token, { actie: "afronden" });
   assert.deepEqual(r.lichaam, { ok: true, al_afgerond: false });
   assert.deepEqual([s.mt.get(ID(3)).eerste, s.mt.get(ID(3)).app], [true, false]);
-  assert.equal(s.oproepen.at(-2).pad, "/auth/v1/admin/users/" + ID(3) + "/factors", "de koppeling van een ander account werd nagekeken");
+  assert.equal(s.mt.get(ID(3)).factor, ID(903), "de app van de sessie is niet de app die telt (I8)");
   assert.deepEqual((await s.vraag(token, { actie: "afronden" })).lichaam, { ok: true, al_afgerond: true });
+  // Koppelt hij er later zelf een app bij, dan wordt die nooit stil de app van het account (I8).
+  s.auth.get(ID(3)).factoren.push({ id: ID(913), factor_type: "totp", status: "verified" });
+  const ander = s.sessie(3, "aal2", ["password", "totp"], ID(913));
+  assert.deepEqual((await s.vraag(ander, { actie: "afronden" })).lichaam, { ok: true, al_afgerond: true });
+  assert.equal(s.mt.get(ID(3)).factor, ID(903), "een andere app werd stil de app van het account");
+  assert.ok(!padenVan(s).some((pad) => pad.includes("/factors")), "afronden las de koppelingen met de secret key; dat doet de databank zelf");
   s.geenGeheimen();
 });
 
@@ -535,7 +589,7 @@ Deno.test("aanmaken: een account met een tijdelijk wachtwoord, dat één keer te
   assert.equal(r.lichaam.uren, 48);
   const bij = s.auth.get(r.lichaam.gebruiker);
   assert.deepEqual([bij.email, bij.wachtwoord, bij.bevestigd], ["lien.proef@voorbeeld.test", r.lichaam.wachtwoord, true]);
-  assert.deepEqual({ ...s.mt.get(r.lichaam.gebruiker) }, { naam: "Lien Proef", email: "lien.proef@voorbeeld.test", rol: "leerkracht", actief: true, tijdelijk: true, tot: s.nu + 48 * 3600e3, eerste: false, app: true, open: null });
+  assert.deepEqual({ ...s.mt.get(r.lichaam.gebruiker) }, { naam: "Lien Proef", email: "lien.proef@voorbeeld.test", rol: "leerkracht", actief: true, tijdelijk: true, tot: s.nu + 48 * 3600e3, eerste: false, app: true, open: null, herstelW: false, herstelA: false, factor: null });
   assert.deepEqual(padenVan(s), ["GET /auth/v1/user", "POST /rest/v1/rpc/mt_account_start", "POST /auth/v1/admin/users", "POST /rest/v1/rpc/mt_account_klaar"]);
   assert.ok(!s.logboek.join("").includes(r.lichaam.wachtwoord), "het tijdelijke wachtwoord staat in het logboek van de functie");
   const dubbel = await s.vraag(s.beheerder, { actie: "aanmaken", operatie: OP(2), naam: "Lien Twee", email: "lien.proef@voorbeeld.test", rol: "lezer" });
@@ -563,6 +617,34 @@ Deno.test("aanmaken: een account dat al bij Supabase bestond, krijgt een nieuw w
   const bestaand = await s.vraag(s.beheerder, { actie: "aanmaken", operatie: OP(2), naam: "Kaper", email: "leerkracht@voorbeeld.test", rol: "beheerder" });
   assert.equal(bestaand.status, 422);
   assert.equal(s.auth.get(ID(2)).wachtwoord, "wachtwoord-van-de-leerkracht");
+  // Lopen het adres in de MT en dat bij Supabase uiteen (O2), dan weigert de start ook, en wijzigt er bij Supabase niets.
+  s.auth.get(ID(2)).email = "afwijkend@voorbeeld.test";
+  const vanaf = s.oproepen.length;
+  const afwijkend = await s.vraag(s.beheerder, { actie: "aanmaken", operatie: OP(3), naam: "Kaper", email: "afwijkend@voorbeeld.test", rol: "lezer" });
+  assert.equal(afwijkend.status, 422);
+  assert.deepEqual(padenVan(s, vanaf), ["GET /auth/v1/user", "POST /rest/v1/rpc/mt_account_start"], "na de weigering gebeurde er nog iets bij Supabase");
+  assert.deepEqual([s.auth.get(ID(2)).wachtwoord, s.auth.get(ID(2)).factoren.length], ["wachtwoord-van-de-leerkracht", 1]);
+  s.geenGeheimen();
+});
+
+Deno.test("aanmaken: bestaat het adres bij Supabase pas na de start, dan neemt de functie niets over (I1)", async () => {
+  const s = school();
+  s.storing = (o) => o.methode === "POST" && o.pad === "/auth/v1/admin/users" ? new Response('{"error_code":"email_exists"}', { status: 422 }) : null;
+  const r = await s.vraag(s.beheerder, { actie: "aanmaken", operatie: OP(1), naam: "Proef Net", email: "net@voorbeeld.test", rol: "lezer" });
+  assert.equal(r.status, 409);
+  assert.ok(!padenVan(s).some((pad) => pad.startsWith("PUT ") || pad.startsWith("DELETE ") || pad.startsWith("GET /auth/v1/admin")), "de functie zocht of wijzigde een bestaand account");
+  assert.equal(s.ops.get(OP(1)).resultaat, "mislukt");
+  assert.equal(s.mt.size, 2);
+});
+
+Deno.test("aanmaken: loopt er al een aanmaak voor hetzelfde adres, dan gebeurt er bij Supabase niets (I1)", async () => {
+  const s = school();
+  // Een eerste aanvraag is nog bezig, bv. in een ander tabblad of bij de andere beheerder.
+  s.ops.set(OP(9), { soort: "aanmaken", door: ID(1), voor: null, plan: { naam: "Proef Dubbel", email: "dubbel@voorbeeld.test", rol: "lezer" }, afgerond: false });
+  const r = await s.vraag(s.beheerder, { actie: "aanmaken", operatie: OP(2), naam: "Proef Dubbel", email: " Dubbel@voorbeeld.test ", rol: "lezer" });
+  assert.equal(r.status, 409);
+  assert.deepEqual(padenVan(s), ["GET /auth/v1/user", "POST /rest/v1/rpc/mt_account_start"], "de tweede aanvraag bereikte Supabase: ze kon het wachtwoord van de eerste vervangen");
+  assert.equal(s.ops.has(OP(2)), false);
 });
 
 Deno.test("aanmaken: lukt het bij Supabase niet, dan is er geen gebruiker en staat de mislukking in het register", async () => {
@@ -571,6 +653,7 @@ Deno.test("aanmaken: lukt het bij Supabase niet, dan is er geen gebruiker en sta
   const r = await s.vraag(s.beheerder, { actie: "aanmaken", operatie: OP(1), naam: "Proef Weg", email: "weg@voorbeeld.test", rol: "lezer" });
   assert.equal(r.status, 503);
   assert.equal(r.lichaam.geblokkeerd, false);
+  assert.equal(r.lichaam.onbekend, true, "geen antwoord van Supabase is geen 'niet gebeurd': de uitkomst is niet bekend (I2)");
   assert.deepEqual([s.ops.get(OP(1)).resultaat, s.ops.get(OP(1)).melding], ["mislukt", "Supabase gaf geen antwoord."]);
   assert.equal(s.mt.size, 2);
 });
@@ -630,9 +713,13 @@ Deno.test("tijdelijk wachtwoord: mislukt het bij Supabase, dan blijft het accoun
   assert.equal(s.mt.get(ID(2)).open, OP(1));
   assert.equal(s.ops.get(OP(1)).resultaat, "mislukt");
   s.storing = null;
+  // Een andere handeling heft de reset niet op (B2): na een e-mailwijziging blijft het account geblokkeerd.
+  const mail = await s.vraag(s.beheerder, { actie: "email_wijzigen", operatie: OP(5), gebruiker: ID(2), email: "ander@voorbeeld.test" });
+  assert.equal(mail.status, 200, JSON.stringify(mail.lichaam));
+  assert.equal(s.mt.get(ID(2)).herstelW, true, "een e-mailwijziging hief de reset op");
   const opnieuw = await s.vraag(s.beheerder, { actie: "tijdelijk_wachtwoord", operatie: OP(2), gebruiker: ID(2) });
   assert.equal(opnieuw.status, 200);
-  assert.equal(s.mt.get(ID(2)).open, null);
+  assert.deepEqual([s.mt.get(ID(2)).open, s.mt.get(ID(2)).herstelW], [null, false]);
 });
 
 Deno.test("tijdelijk wachtwoord: de koppeling niet volledig gewist is mislukt, en blokkeert", async () => {
@@ -659,6 +746,42 @@ Deno.test("het einde van een handeling: bij een storing van de databank nog twee
   assert.equal(weg.status, 503);
   assert.equal(weg.lichaam.wachtwoord, undefined);
   assert.equal(s.mt.get(ID(2)).open, OP(2));
+});
+
+Deno.test("het einde van een handeling: ging enkel het antwoord verloren, dan komt het tijdelijke wachtwoord toch terug (I2)", async () => {
+  const s = school();
+  let keer = 0;
+  s.verlies = (o) => o.pad === "/rest/v1/rpc/mt_account_klaar" && ++keer === 1;
+  const r = await s.vraag(s.beheerder, { actie: "aanmaken", operatie: OP(1), naam: "Proef Verloren", email: "verloren@voorbeeld.test", rol: "lezer" });
+  assert.equal(r.status, 200, JSON.stringify(r.lichaam));
+  assert.equal(keer, 2, "het einde werd niet herhaald");
+  assert.equal(s.auth.get(r.lichaam.gebruiker).wachtwoord, r.lichaam.wachtwoord);
+  assert.equal([...s.mt.values()].filter((g) => g.email === "verloren@voorbeeld.test").length, 1);
+});
+
+Deno.test("de sleutel volgt nooit een omleiding (V2, O12)", async () => {
+  const s = school();
+  s.storing = (o) => o.methode === "PUT" ? new Response(null, { status: 307, headers: { Location: "https://elders.voorbeeld.test/vang" } }) : null;
+  const r = await s.vraag(s.beheerder, { actie: "tijdelijk_wachtwoord", operatie: OP(1), gebruiker: ID(2) });
+  assert.equal(r.status, 503);
+  assert.deepEqual([r.lichaam.onbekend, r.lichaam.geblokkeerd], [true, true]);
+  assert.ok(s.oproepen.every((o) => o.omleiding === "error" && o.adres.startsWith(URL_MT + "/")), "een oproep volgde een omleiding, of ging naar een ander adres");
+  s.geenGeheimen();
+});
+
+Deno.test("een verzoek blijft binnen de tijd: daarna begint de functie niets nieuws bij Supabase, maar het einde loopt nog", async () => {
+  const s = school();
+  // Supabase stelt het wachtwoord in, maar doet daar 25 seconden over.
+  s.storing = (o) => {
+    if (o.methode === "PUT") s.nu += 25_000;
+    return null;
+  };
+  const r = await s.vraag(s.beheerder, { actie: "tijdelijk_wachtwoord", operatie: OP(1), gebruiker: ID(2), app_wissen: true });
+  assert.equal(r.status, 502);
+  assert.equal(r.lichaam.geblokkeerd, true);
+  assert.ok(!padenVan(s).some((pad) => pad.includes("/factors")), "na de tijd begon de functie nog aan de koppelingen");
+  assert.equal(padenVan(s).at(-1), "POST /rest/v1/rpc/mt_account_klaar", "het einde in de databank liep niet meer");
+  assert.deepEqual([s.ops.get(OP(1)).resultaat, s.mt.get(ID(2)).herstelW, s.mt.get(ID(2)).herstelA], ["mislukt", true, true]);
 });
 
 Deno.test("uitschakelen: meteen uit in de MT, dan de ban en een wachtwoord dat niemand kent", async () => {
@@ -694,8 +817,9 @@ Deno.test("een ander e-mailadres: bij Supabase en in de MT, of geen van beide", 
   assert.deepEqual([s.auth.get(ID(2)).email, s.mt.get(ID(2)).email], ["nieuw.adres@voorbeeld.test", "nieuw.adres@voorbeeld.test"]);
   s.account(8, "bezet@voorbeeld.test", "een-wachtwoord-zonder-mt");
   const bezet = await s.vraag(s.beheerder, { actie: "email_wijzigen", operatie: OP(2), gebruiker: ID(2), email: "bezet@voorbeeld.test" });
-  assert.equal(bezet.status, 422);
-  assert.equal(bezet.lichaam.geblokkeerd, false);
+  assert.equal(bezet.status, 422, "een adres dat bij Supabase al van een ander account is, weigert de databank bij de start (O18)");
+  assert.notEqual(bezet.lichaam.geblokkeerd, true);
+  assert.equal(s.auth.get(ID(8)).email, "bezet@voorbeeld.test");
   assert.deepEqual([s.mt.get(ID(2)).email, s.mt.get(ID(2)).open], ["nieuw.adres@voorbeeld.test", null]);
   s.geenGeheimen();
 });

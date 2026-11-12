@@ -125,7 +125,7 @@ Deno.test("serverfunctie: de handeling in het lichaam, het toegangsbewijs als Be
   let gezien = null;
   const r = await metFetch(async (url, opties) => {
     gezien = { url, opties };
-    return json(200, { ok: true, versie: "0.4.0", bekend: true });
+    return json(200, { ok: true, versie: "0.6.0", bekend: true });
   }, () => serverfunctie("stand"));
   assert.equal(r.ok, true);
   assert.equal(r.gegevens.bekend, true);
@@ -265,4 +265,47 @@ Deno.test("lezen: de soort fout, en zonder aanmelding gaat er niets naar de data
   const r = await metFetch(async () => (opgeroepen++, json(200, [])), () => leesTabel("klassen", { kolommen: ["id"], volgorde: ["id"] }));
   assert.equal(r.soort, "sessie");
   assert.equal(opgeroepen, 0);
+});
+
+// ---------- Review 1 (versie 0.6.0) ----------
+
+Deno.test("serverfunctie: geen antwoord van Supabase is 'uitkomst niet bekend', en dat komt mee tot bij het scherm (I2)", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  const r = await metFetch(
+    async () => json(503, { ok: false, code: "supabase", melding: "Supabase gaf geen antwoord: de uitkomst is niet bekend.", onbekend: true, geblokkeerd: true }),
+    () => serverfunctie("tijdelijk_wachtwoord", { operatie: "x", gebruiker: "y" }),
+  );
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.extra, { geblokkeerd: true, onbekend: true });
+  const gewoon = await metFetch(
+    async () => json(502, { ok: false, code: "supabase", melding: "Supabase stelde het wachtwoord niet in." }),
+    () => serverfunctie("tijdelijk_wachtwoord", { operatie: "x", gebruiker: "y" }),
+  );
+  assert.deepEqual(gewoon.extra, { geblokkeerd: false, onbekend: false });
+});
+
+Deno.test("rpc: een functie die de databank enkel in een oudere versie kent, en een databank die even bezet is", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  const oud = await metFetch(async () => json(404, { code: "PGRST202", message: "Could not find the function public.mt_gebruiker_wijzigen" }), () => rpc("mt_gebruiker_wijzigen", {}));
+  assert.equal(oud.soort, "ontbreekt");
+  assert.match(oud.tekst, /SQL-script/);
+  for (const code of ["55P03", "57014"]) {
+    const bezet = await metFetch(async () => json(500, { code, message: "canceling statement" }), () => rpc("mt_iets"));
+    assert.equal(bezet.soort, "fout");
+    assert.match(bezet.tekst, /even bezet/);
+  }
+});
+
+Deno.test("lees: een kolom die de databank nog niet kent, is een script dat nog niet uitgevoerd is", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  const r = await metFetch(
+    async () => json(400, { code: "42703", message: "column gebruikers.revisie does not exist" }),
+    () => leesTabel("gebruikers", { kolommen: ["id", "revisie"], volgorde: ["id"] }),
+  );
+  assert.equal(r.ok, false);
+  assert.equal(r.soort, "ontbreekt");
+  assert.match(r.tekst, /SQL-script/);
 });

@@ -1,4 +1,4 @@
-// MT · data.js · versie 0.5.1
+// MT · data.js · versie 0.6.0
 // De verbinding met de eigen databank (17.1, 17.8). De schermen praten enkel via dit bestand met
 // Supabase (regel 3). De publishable key gaat enkel als apikey mee; Authorization enkel met het
 // toegangsbewijs van een aangemelde gebruiker (design system 1.13).
@@ -9,7 +9,7 @@
 
 import { ACCOUNTFUNCTIE } from "./config.js";
 
-export const VERSIE = "0.5.1";
+export const VERSIE = "0.6.0";
 
 /** Zoals de REST-laag van de andere tools: na 12 seconden zonder antwoord is het een fout. */
 const WACHTTIJD = 12000;
@@ -135,9 +135,12 @@ export async function rpc(naam, args = {}) {
   const code = typeof g.code === "string" ? g.code : "";
   const tekst = typeof g.message === "string" && g.message.startsWith("MT: ") ? g.message.slice(4) : null;
   if (Object.prototype.hasOwnProperty.call(SOORT_PER_CODE, code)) return mislukt(SOORT_PER_CODE[code], tekst, antwoord.status);
+  // De databank wachtte te lang, op een slot of op een antwoord (de tijdslimieten van Supabase): er is niets gewijzigd.
+  if (code === "55P03" || code === "57014") return mislukt("fout", "De databank is even bezet. Probeer het over enkele seconden opnieuw.", antwoord.status);
   if (antwoord.status === 401) return mislukt("sessie", null, 401);
   if (antwoord.status === 403) return mislukt("rechten", null, 403);
-  if (antwoord.status === 404) return mislukt("ontbreekt", "De databank kent deze functie niet: een SQL-script is nog niet uitgevoerd.", 404);
+  // 404: de functie bestaat niet. PGRST202: ze bestaat niet met deze parameters, dus in een oudere versie.
+  if (antwoord.status === 404 || code === "PGRST202") return mislukt("ontbreekt", "De databank kent deze functie niet: een SQL-script is nog niet uitgevoerd.", 404);
   return mislukt("fout", null, antwoord.status);
 }
 
@@ -150,7 +153,8 @@ export async function serverfunctie(actie, invoer = {}) {
   if (antwoord.ok && g.ok === true) return { ok: true, gegevens: g };
   if (antwoord.status === 0) return mislukt("verbinding", null, 0);
   if (antwoord.status === 404) return mislukt("ontbreekt", "De serverfunctie " + ACCOUNTFUNCTIE + " staat nog niet in Supabase.", 404);
-  const extra = { geblokkeerd: g.geblokkeerd === true };
+  // onbekend: Supabase gaf geen antwoord, dus de wijziging kan toch gebeurd zijn (review 1, I2).
+  const extra = { geblokkeerd: g.geblokkeerd === true, onbekend: g.onbekend === true };
   if (typeof g.code === "string" && typeof g.melding === "string") {
     return mislukt(SOORTEN.has(g.code) ? g.code : "fout", g.melding, antwoord.status, extra);
   }
@@ -203,6 +207,9 @@ export async function lees(tabel, { kolommen, waar = {}, volgorde }) {
       if (antwoord.status === 401) return mislukt("sessie", null, 401);
       if (antwoord.status === 403) return mislukt("rechten", null, 403);
       if (antwoord.status === 404) return mislukt("ontbreekt", "De databank kent deze tabel niet: een SQL-script is nog niet uitgevoerd.", 404);
+      // Een kolom die de databank nog niet kent: de pagina is nieuwer dan de databank.
+      const code = antwoord.gegevens && typeof antwoord.gegevens === "object" && typeof antwoord.gegevens.code === "string" ? antwoord.gegevens.code : "";
+      if (code === "42703" || code === "42P01") return mislukt("ontbreekt", "De databank is nog niet bijgewerkt: het laatste SQL-script is nog niet uitgevoerd.", antwoord.status);
       return mislukt("fout", null, antwoord.status);
     }
     rijen.push(...antwoord.gegevens);

@@ -4,7 +4,7 @@
 // Het scherm beslist niets over rechten: dat doen de databank en de serverfunctie.
 
 import assert from "node:assert/strict";
-import { keur, kiesRijen, klasGroepen, klassenVan, maakRijen, norm, overnemen, resterend, toestandVan, vorigeKlassen } from "../code/gebruikers.js";
+import { bruikbareBeheerders, keur, kiesRijen, klasGroepen, klassenVan, maakRijen, norm, overnemen, resterend, toestandVan, vorigeKlassen } from "../code/gebruikers.js";
 
 const NU = Date.parse("2026-11-11T10:00:00Z");
 const uur = 3600000;
@@ -126,4 +126,34 @@ Deno.test("klassen kiezen: per groep en per leerjaar; een klas die niet meer act
   const metOude = klasGroepen(KLASSEN, "2026-2027", new Set(["z26"]));
   assert.deepEqual(metOude.map(([titel]) => titel), ["Kleuters", "4e leerjaar", "6e leerjaar", "Lager", "Andere"]);
   assert.deepEqual(klasGroepen(KLASSEN, "2027-2028", new Set()), []);
+});
+
+// ---------- Review 1 (versie 0.6.0) ----------
+
+Deno.test("een nieuw wachtwoord dat begonnen maar niet gelukt is, is een wijziging die niet afgerond is (B2)", () => {
+  assert.deepEqual(toestandVan(account({ herstel_wachtwoord: true }), NU), { soort: "hangt", tekst: "Wijziging niet afgerond", kleur: "warn", aandacht: true });
+  assert.equal(toestandVan(account({ herstel_app: true }), NU).soort, "hangt");
+  assert.equal(toestandVan(account({ actief: false, herstel_wachtwoord: true }), NU).aandacht, true, "ook als het account al uit staat: het uitschakelen is dan niet rond");
+});
+
+Deno.test("een adres dat bij Supabase afwijkt, vraagt aandacht (O2)", () => {
+  const basis = { toewijzingen: [], klassen: [], jaar: null, ik: "x", nu: NU };
+  const rijen = maakRijen({ ...basis, gebruikers: [account(), account({ id: "g2", naam: "Ander" })], afwijkend: new Set(["g2"]) });
+  assert.deepEqual(rijen.map((r) => r.afwijkend), [false, true]);
+  assert.deepEqual(kiesRijen(rijen, { toestand: "aandacht" }).map((r) => r.g.id), ["g2"]);
+  assert.equal(maakRijen({ ...basis, gebruikers: [account()] })[0].afwijkend, false, "zonder lijst wijkt niemand af");
+});
+
+Deno.test("hoeveel beheerders nu echt kunnen aanmelden en beheren (B214)", () => {
+  const rij = (anders) => maakRijen({ gebruikers: [account({ rol: "beheerder", ...anders })], toewijzingen: [], klassen: [], jaar: null, ik: "x", nu: NU })[0];
+  assert.equal(bruikbareBeheerders([rij({}), rij({ id: "g2" })]), 2);
+  assert.equal(bruikbareBeheerders([
+    rij({}),
+    rij({ id: "g2", app_koppelen: true }),
+    rij({ id: "g3", actief: false }),
+    rij({ id: "g4", herstel_wachtwoord: true }),
+    rij({ id: "g5", open_operatie: "x" }),
+    rij({ id: "g6", wachtwoord_tijdelijk: true, tijdelijk_tot: new Date(NU + uur).toISOString() }),
+  ]), 1, "wie zijn app nog moet koppelen, uit staat, een herstel heeft of een tijdelijk wachtwoord, telt niet");
+  assert.equal(bruikbareBeheerders([rij({ rol: "leerkracht" }), rij({ rol: "lezer", id: "g2" })]), 0);
 });
