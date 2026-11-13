@@ -221,6 +221,8 @@ Deno.test("lezen: meer dan duizend rijen komen in bladzijden, allemaal", async (
   const gevraagd = [];
   const r = await metFetch(async (url) => {
     const u = new URL(url);
+    // Na een lijst van meer dan één bladzijde kijkt de MT de aanmelding na (review 1, I6).
+    if (u.pathname.endsWith("/rpc/mt_mijn_account")) return json(200, { id: "g1", rol: "beheerder" });
     const vanaf = Number(u.searchParams.get("offset"));
     gevraagd.push(vanaf);
     return json(200, alle.slice(vanaf, vanaf + Number(u.searchParams.get("limit"))));
@@ -308,4 +310,115 @@ Deno.test("lees: een kolom die de databank nog niet kent, is een script dat nog 
   assert.equal(r.ok, false);
   assert.equal(r.soort, "ontbreekt");
   assert.match(r.tekst, /SQL-script/);
+});
+
+// ---------- Levering B: een lijst is pas een lijst als ze volledig is (I6), en het afmelden (I4) ----------
+
+import { afmeldenBijSupabase, totaalUit } from "../code/data.js";
+
+/** Een nagebootste tabel: geeft bladzijden van 1000 rijen, met het totaal in Content-Range bij de eerste. */
+function tabel(bladzijden, { totaal = null, account = () => json(200, { id: "g1", rol: "beheerder" }) } = {}) {
+  const gezien = [];
+  let beurt = 0;
+  const haal = async (url, opties) => {
+    const u = new URL(url);
+    gezien.push({ pad: u.pathname, offset: u.searchParams.get("offset"), prefer: opties.headers.Prefer ?? null });
+    if (u.pathname.endsWith("/rpc/mt_mijn_account")) return account();
+    const blad = bladzijden[Math.min(beurt++, bladzijden.length - 1)];
+    const koppen = { "Content-Type": "application/json" };
+    if (totaal !== null && u.searchParams.get("offset") === "0") koppen["Content-Range"] = "0-" + (blad.length - 1) + "/" + totaal;
+    return new Response(JSON.stringify(blad), { status: 200, headers: koppen });
+  };
+  return { haal, gezien };
+}
+const rijen = (aantal, vanaf = 0) => Array.from({ length: aantal }, (_, i) => ({ id: vanaf + i }));
+const leesProef = (rol) => leesTabel("leerlingen", { kolommen: ["id"], volgorde: ["id"], ...(rol ? { rol } : {}) });
+
+Deno.test("totaalUit: het getal na de schuine streep, of niets", () => {
+  assert.equal(totaalUit("0-999/1503"), 1503);
+  assert.equal(totaalUit("*/0"), 0);
+  assert.equal(totaalUit("0-24/*"), null);
+  assert.equal(totaalUit(null), null);
+});
+
+Deno.test("lees: twee bladzijden, het totaal klopt, en de aanmelding wordt nagekeken", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  const t = tabel([rijen(1000), rijen(503, 1000)], { totaal: 1503 });
+  const r = await metFetch(t.haal, () => leesProef());
+  assert.equal(r.ok, true);
+  assert.equal(r.gegevens.length, 1503);
+  assert.deepEqual(t.gezien.map((g) => g.prefer), ["count=exact", null, null], "enkel de eerste bladzijde vraagt het totaal");
+  assert.equal(t.gezien.at(-1).pad, "/rest/v1/rpc/mt_mijn_account", "na een lijst van meer dan één bladzijde wordt de aanmelding nagekeken");
+});
+
+Deno.test("lees: vallen de rechten weg na de eerste bladzijde, dan is er geen lijst (I6)", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  // Precies 1000 rijen op de eerste bladzijde, en daarna toont de databank niets meer.
+  const weg = tabel([rijen(1000), []], { totaal: 1503, account: () => json(403, { code: "42501", message: "MT: geen toegang" }) });
+  const r = await metFetch(weg.haal, () => leesProef());
+  assert.equal(r.ok, false, "een afgekapte lijst van 1000 rijen telde als volledig");
+  assert.equal(r.soort, "rechten");
+  // De aanmelding is nog in orde, maar de lijst klopt twee keer niet met het totaal: geen lijst.
+  const schuift = tabel([rijen(1000), []], { totaal: 1503 });
+  const s = await metFetch(schuift.haal, () => leesProef());
+  assert.equal(s.ok, false);
+  assert.match(s.tekst, /wijzigde terwijl/);
+  assert.equal(schuift.gezien.filter((g) => g.offset === "0").length, 2, "de MT las niet één keer opnieuw");
+});
+
+Deno.test("lees: één keer opnieuw lezen volstaat als de lijst dan wel klopt", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  const t = tabel([rijen(3), rijen(4)], { totaal: 4 });
+  const r = await metFetch(t.haal, () => leesProef());
+  assert.equal(r.ok, true);
+  assert.equal(r.gegevens.length, 4);
+});
+
+Deno.test("lees: een lege lijst telt enkel voor wie de rol nog heeft die het scherm eist (I6)", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  const lezer = { account: () => json(200, { id: "g1", rol: "leerkracht" }), totaal: 0 };
+  assert.equal((await metFetch(tabel([[]], lezer).haal, () => leesProef("beheerder"))).soort, "rechten", "wie geen beheerder meer is, kreeg een lege lijst als antwoord");
+  assert.deepEqual(await metFetch(tabel([[]], lezer).haal, () => leesProef(["beheerder", "leerkracht"])), { ok: true, gegevens: [] });
+  assert.deepEqual(await metFetch(tabel([[]], lezer).haal, () => leesProef()), { ok: true, gegevens: [] }, "zonder geëiste rol volstaat een aanmelding die in orde is");
+});
+
+Deno.test("lees: zonder de kop met het totaal werkt het lezen zoals voorheen", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  const t = tabel([rijen(7)]);
+  const r = await metFetch(t.haal, () => leesProef());
+  assert.equal(r.gegevens.length, 7);
+  assert.equal(t.gezien.length, 1, "een korte lijst op één bladzijde vraagt geen extra oproep");
+});
+
+Deno.test("afmelden bij Supabase: enkel deze sessie, met het toegangsbewijs, en nooit langer dan anderhalve seconde (I4)", async () => {
+  stel(PROJECT);
+  let gezien = null;
+  await metFetch(async (url, opties) => {
+    gezien = { url, opties };
+    return new Response(null, { status: 204 });
+  }, () => afmeldenBijSupabase("a.b.c"));
+  assert.equal(gezien.url, PROJECT.mt.url + "/auth/v1/logout?scope=local");
+  assert.equal(gezien.opties.method, "POST");
+  assert.equal(gezien.opties.headers.Authorization, "Bearer a.b.c");
+  assert.equal(gezien.opties.keepalive, true, "het verzoek moet doorlopen als de pagina herlaadt");
+  // Zonder netwerk, of met een netwerk dat nooit antwoordt: het afmelden gaat door.
+  const begin = Date.now();
+  let hangt;
+  await metFetch(() => new Promise((_, weiger) => (hangt = weiger)), () => afmeldenBijSupabase("a.b.c"));
+  assert.ok(Date.now() - begin < 2500, "het afmelden bleef wachten op Supabase");
+  hangt(new TypeError("afgebroken"));
+  await metFetch(async () => {
+    throw new TypeError("geen netwerk");
+  }, () => afmeldenBijSupabase("a.b.c"));
+  let geroepen = false;
+  await metFetch(async () => {
+    geroepen = true;
+    return new Response(null, { status: 204 });
+  }, () => afmeldenBijSupabase(null));
+  assert.equal(geroepen, false, "zonder toegangsbewijs valt er niets af te melden");
 });

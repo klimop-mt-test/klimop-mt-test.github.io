@@ -1,4 +1,4 @@
-// MT · gebruikers.js · versie 0.6.0
+// MT · gebruikers.js · versie 0.6.1
 // Het scherm Gebruikers (3, 15, B165, B170; canvas: bord "Gebruikers"): iedereen die kan aanmelden,
 // met de rol, de klassen per schooljaar en de stand van het account. Enkel voor een beheerder.
 //
@@ -15,7 +15,7 @@ import * as data from "./data.js";
 import { ACCOUNTFUNCTIE, ACCOUNTFUNCTIE_VERSIE, SCHOOLDOMEIN } from "./config.js";
 import { bevries, datumEnUur, html, knopBezig, meld, venster, vraag, zet } from "./ui.js";
 
-export const VERSIE = "0.6.0";
+export const VERSIE = "0.6.1";
 
 // ---------- Zonder browser te testen ----------
 
@@ -256,11 +256,11 @@ export function start({ deel, ik, terug, herstart }) {
       data.lees("gebruikers", {
         kolommen: ["id", "naam", "email", "rol", "actief", "wachtwoord_tijdelijk", "tijdelijk_tot", "eerste_aanmelding_afgerond", "app_koppelen", "open_operatie",
           "herstel_wachtwoord", "herstel_app", "revisie"],
-        volgorde: ["naam", "id"],
+        volgorde: ["naam", "id"], rol: "beheerder",
       }),
-      data.lees("schooljaren", { kolommen: ["schooljaar", "stand"], volgorde: ["schooljaar"] }),
-      data.lees("klassen", { kolommen: ["id", "schooljaar", "bron_id", "naam", "groep", "leerjaar", "actief", "volgorde"], volgorde: ["schooljaar", "volgorde", "naam", "id"] }),
-      data.lees("klastoewijzingen", { kolommen: ["gebruiker_id", "klas_id", "schooljaar"], volgorde: ["gebruiker_id", "klas_id"] }),
+      data.lees("schooljaren", { kolommen: ["schooljaar", "stand"], volgorde: ["schooljaar"], rol: "beheerder" }),
+      data.lees("klassen", { kolommen: ["id", "schooljaar", "bron_id", "naam", "groep", "leerjaar", "actief", "volgorde"], volgorde: ["schooljaar", "volgorde", "naam", "id"], rol: "beheerder" }),
+      data.lees("klastoewijzingen", { kolommen: ["gebruiker_id", "klas_id", "schooljaar"], volgorde: ["gebruiker_id", "klas_id"], rol: "beheerder" }),
       data.rpc("mt_account_afwijkingen"),
       data.serverfunctie("stand"),
     ]);
@@ -285,7 +285,7 @@ export function start({ deel, ik, terug, herstart }) {
     const open = s.gebruikers.map((x) => x.open_operatie).filter(Boolean);
     s.operaties = new Map();
     if (open.length) {
-      const o = await data.lees("account_operaties", { kolommen: ["id", "soort", "begonnen_op", "afgerond_op", "resultaat"], waar: { id: open }, volgorde: ["id"] });
+      const o = await data.lees("account_operaties", { kolommen: ["id", "soort", "begonnen_op", "afgerond_op", "resultaat"], waar: { id: open }, volgorde: ["id"], rol: "beheerder" });
       if (o.ok) s.operaties = new Map(o.gegevens.map((x) => [x.id, x]));
     }
     const teksten = [];

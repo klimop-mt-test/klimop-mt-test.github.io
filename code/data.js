@@ -1,4 +1,4 @@
-// MT · data.js · versie 0.6.0
+// MT · data.js · versie 0.6.1
 // De verbinding met de eigen databank (17.1, 17.8). De schermen praten enkel via dit bestand met
 // Supabase (regel 3). De publishable key gaat enkel als apikey mee; Authorization enkel met het
 // toegangsbewijs van een aangemelde gebruiker (design system 1.13).
@@ -9,7 +9,7 @@
 
 import { ACCOUNTFUNCTIE } from "./config.js";
 
-export const VERSIE = "0.6.0";
+export const VERSIE = "0.6.1";
 
 /** Zoals de REST-laag van de andere tools: na 12 seconden zonder antwoord is het een fout. */
 const WACHTTIJD = 12000;
@@ -35,9 +35,9 @@ export function stelToken(bron) {
  * Eén oproep naar het project van de MT. Geeft altijd een antwoord terug, nooit een uitzondering:
  * { ok, status, gegevens, reden }. status 0 betekent: geen antwoord.
  */
-async function roep(pad, { methode = "GET", lichaam, token, wachttijd = WACHTTIJD } = {}) {
+async function roep(pad, { methode = "GET", lichaam, token, wachttijd = WACHTTIJD, extra = null } = {}) {
   if (!mt) return { ok: false, status: 0, gegevens: null, reden: "de MT kent haar databank nog niet" };
-  const koppen = { apikey: mt.sleutel, Accept: "application/json" };
+  const koppen = { apikey: mt.sleutel, Accept: "application/json", ...(extra || {}) };
   if (token) koppen.Authorization = "Bearer " + token;
   if (lichaam !== undefined) koppen["Content-Type"] = "application/json";
   const stopper = new AbortController();
@@ -61,13 +61,34 @@ async function roep(pad, { methode = "GET", lichaam, token, wachttijd = WACHTTIJ
         gegevens = null;
       }
     }
-    return { ok: antwoord.ok, status: antwoord.status, gegevens, reden: antwoord.ok ? null : redenVoor(antwoord.status) };
+    return { ok: antwoord.ok, status: antwoord.status, gegevens, reden: antwoord.ok ? null : redenVoor(antwoord.status), bereik: antwoord.headers.get("content-range") };
   } catch (fout) {
     const reden = fout && fout.name === "AbortError" ? "geen antwoord binnen " + Math.round(wachttijd / 1000) + " seconden" : "de databank is niet bereikbaar";
     return { ok: false, status: 0, gegevens: null, reden };
   } finally {
     clearTimeout(klok);
   }
+}
+
+/**
+ * De sessie bij Supabase beëindigen, bij het afmelden. De browser kent ze dan al niet meer (auth.js):
+ * dit wacht dus hoogstens anderhalve seconde en mag mislukken. Door keepalive loopt het verzoek door
+ * als de pagina intussen herlaadt. Zonder verbinding blijft de sessie bij Supabase bestaan tot ze
+ * vervalt, maar geen browser kent haar nog (review 1, I4).
+ */
+export async function afmeldenBijSupabase(token) {
+  if (!mt || !token) return;
+  const verzoek = fetch(mt.url + "/auth/v1/logout?scope=local", {
+    method: "POST",
+    headers: { apikey: mt.sleutel, Authorization: "Bearer " + token },
+    cache: "no-store",
+    credentials: "omit",
+    referrerPolicy: "no-referrer",
+    keepalive: true,
+  }).catch(() => undefined);
+  let klok;
+  await Promise.race([verzoek, new Promise((klaar) => (klok = setTimeout(klaar, 1500)))]);
+  clearTimeout(klok);
 }
 
 /** Een begrijpelijke reden bij een fout van de databank. */
@@ -177,19 +198,57 @@ function inLijst(w) {
   return '"' + String(w).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
 }
 
+/** Het totaal uit de kop Content-Range: het getal na de schuine streep, zoals in "0-999/1503". Niets als de kop ontbreekt. */
+export function totaalUit(bereik) {
+  const m = /\/(\d+)$/.exec(String(bereik ?? ""));
+  return m ? Number(m[1]) : null;
+}
+
+/** Eén lezing van alle bladzijden. Geeft { rijen, totaal, bladzijden }, of { fout } met het antwoord voor het scherm. */
+async function leesBladzijden(tabel, vraag) {
+  const rijen = [];
+  let totaal = null;
+  for (let blad = 0; blad < MAX_BLADZIJDEN; blad++) {
+    // Het toegangsbewijs per bladzijde: een lange lijst leest zo nooit met een bewijs dat intussen verliep.
+    const token = await tokenBron();
+    if (!token) return { fout: mislukt("sessie", null, 0) };
+    // De eerste bladzijde vraagt ook het totaal: zo valt op dat een latere bladzijde ontbreekt (review 1, I6).
+    const antwoord = await roep("/rest/v1/" + tabel + "?" + vraag.join("&") + "&limit=" + BLADZIJDE + "&offset=" + blad * BLADZIJDE,
+      { token, extra: blad === 0 ? { Prefer: "count=exact" } : null });
+    if (!antwoord.ok || !Array.isArray(antwoord.gegevens)) {
+      if (antwoord.status === 0) return { fout: mislukt("verbinding", null, 0) };
+      if (antwoord.status === 401) return { fout: mislukt("sessie", null, 401) };
+      if (antwoord.status === 403) return { fout: mislukt("rechten", null, 403) };
+      if (antwoord.status === 404) return { fout: mislukt("ontbreekt", "De databank kent deze tabel niet: een SQL-script is nog niet uitgevoerd.", 404) };
+      // Een kolom die de databank nog niet kent: de pagina is nieuwer dan de databank.
+      const code = antwoord.gegevens && typeof antwoord.gegevens === "object" && typeof antwoord.gegevens.code === "string" ? antwoord.gegevens.code : "";
+      if (code === "42703" || code === "42P01") return { fout: mislukt("ontbreekt", "De databank is nog niet bijgewerkt: het laatste SQL-script is nog niet uitgevoerd.", antwoord.status) };
+      return { fout: mislukt("fout", null, antwoord.status) };
+    }
+    if (blad === 0) totaal = totaalUit(antwoord.bereik);
+    rijen.push(...antwoord.gegevens);
+    if (antwoord.gegevens.length < BLADZIJDE) return { rijen, totaal, bladzijden: blad + 1 };
+  }
+  return { fout: mislukt("fout", "Deze lijst is te lang om in één keer te lezen.", 0) };
+}
+
 /**
  * Leest rijen uit een tabel van de MT, als wie aangemeld is. RLS beslist wat terugkomt.
  *   kolommen  de kolommen: ["id", "naam"]
  *   waar      { kolom: waarde } is gelijk aan; { kolom: [a, b] } is één van; { kolom: null } is leeg
  *   volgorde  ["naam", "id"]: verplicht, en eindigend op wat uniek is; anders verspringen de bladzijden
- * Komt er niets terug, dan kijkt de MT eerst na of de aanmelding nog in orde is: zonder rechten toont
- * de databank ook niets, en dat is geen lege lijst (17.3).
+ *   rol       de rol die het scherm eist, bv. "beheerder" of ["beheerder", "lezer"]: wie die rol niet
+ *             meer heeft, krijgt geen lijst
+ * Een lijst is pas een lijst als ze volledig is (17.3, review 1: I6):
+ *   - komt er niets terug, of telde de lijst meer dan één bladzijde, dan kijkt de MT na of de aanmelding
+ *     nog in orde is, en of de rol nog klopt: zonder rechten toont de databank ook niets, en dat is
+ *     geen lege of korte lijst;
+ *   - het aantal rijen moet het totaal zijn dat de databank bij de eerste bladzijde meldde. Verschilt
+ *     het, dan leest de MT één keer opnieuw; blijft het verschillen, dan is er geen lijst.
  */
-export async function lees(tabel, { kolommen, waar = {}, volgorde }) {
+export async function lees(tabel, { kolommen, waar = {}, volgorde, rol = null }) {
   const namen = [tabel, ...kolommen, ...Object.keys(waar), ...volgorde];
   if (!namen.every((n) => NAAM.test(n)) || !kolommen.length || !volgorde.length) return mislukt("oproep", null, 0);
-  const token = await tokenBron();
-  if (!token) return mislukt("sessie", null, 0);
   const vraag = ["select=" + kolommen.join(",")];
   for (const [kolom, w] of Object.entries(waar)) {
     if (w === null) vraag.push(kolom + "=is.null");
@@ -199,27 +258,21 @@ export async function lees(tabel, { kolommen, waar = {}, volgorde }) {
     } else vraag.push(kolom + "=eq." + encodeURIComponent(String(w)));
   }
   vraag.push("order=" + volgorde.map((kolom) => kolom + ".asc").join(","));
-  const rijen = [];
-  for (let blad = 0; blad < MAX_BLADZIJDEN; blad++) {
-    const antwoord = await roep("/rest/v1/" + tabel + "?" + vraag.join("&") + "&limit=" + BLADZIJDE + "&offset=" + blad * BLADZIJDE, { token });
-    if (!antwoord.ok || !Array.isArray(antwoord.gegevens)) {
-      if (antwoord.status === 0) return mislukt("verbinding", null, 0);
-      if (antwoord.status === 401) return mislukt("sessie", null, 401);
-      if (antwoord.status === 403) return mislukt("rechten", null, 403);
-      if (antwoord.status === 404) return mislukt("ontbreekt", "De databank kent deze tabel niet: een SQL-script is nog niet uitgevoerd.", 404);
-      // Een kolom die de databank nog niet kent: de pagina is nieuwer dan de databank.
-      const code = antwoord.gegevens && typeof antwoord.gegevens === "object" && typeof antwoord.gegevens.code === "string" ? antwoord.gegevens.code : "";
-      if (code === "42703" || code === "42P01") return mislukt("ontbreekt", "De databank is nog niet bijgewerkt: het laatste SQL-script is nog niet uitgevoerd.", antwoord.status);
-      return mislukt("fout", null, antwoord.status);
-    }
-    rijen.push(...antwoord.gegevens);
-    if (antwoord.gegevens.length < BLADZIJDE) {
-      if (rijen.length === 0) {
-        const nog = await rpc("mt_mijn_account");
-        if (!nog.ok) return nog;
-      }
-      return { ok: true, gegevens: rijen };
-    }
+
+  let uit = await leesBladzijden(tabel, vraag);
+  if (uit.fout) return uit.fout;
+  let volledig = uit.totaal === null || uit.rijen.length === uit.totaal;
+  if (!volledig) {
+    uit = await leesBladzijden(tabel, vraag);
+    if (uit.fout) return uit.fout;
+    volledig = uit.totaal === null || uit.rijen.length === uit.totaal;
   }
-  return mislukt("fout", "Deze lijst is te lang om in één keer te lezen.", 0);
+  if (uit.rijen.length === 0 || uit.bladzijden > 1 || !volledig) {
+    const nog = await rpc("mt_mijn_account");
+    if (!nog.ok) return nog;
+    const rollen = rol === null ? null : Array.isArray(rol) ? rol : [rol];
+    if (rollen && !rollen.includes(nog.gegevens && nog.gegevens.rol)) return mislukt("rechten", null, 403);
+  }
+  if (!volledig) return mislukt("fout", "De lijst wijzigde terwijl de MT ze las. Probeer het opnieuw.", 0);
+  return { ok: true, gegevens: uit.rijen };
 }

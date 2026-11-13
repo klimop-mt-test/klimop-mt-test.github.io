@@ -1,4 +1,4 @@
-// MT · auth.js · versie 0.6.0
+// MT · auth.js · versie 0.6.1
 // Aanmelden, de tweestapsverificatie en de sessie (17.2, T5). Het enige bestand dat supabase-js
 // gebruikt, en naast app.js het enige dat de opslag van de browser aanraakt. De bibliotheek staat in
 // de eigen repository (code/lib), op één vaste versie (B158); een test bewaakt haar controlesom.
@@ -12,7 +12,7 @@
 //   - anders in sessionStorage: enkel dit tabblad, weg bij het sluiten, en de MT meldt af na een tijd
 //     zonder activiteit.
 
-export const VERSIE = "0.6.0";
+export const VERSIE = "0.6.1";
 
 /** De sleutel van de sessie in de opslag. De MT heeft een eigen adres, dus geen andere tool leest ze (B72). */
 const SLEUTEL = "mt_auth";
@@ -36,6 +36,8 @@ export function maakOpslag(lokaal, tab) {
     }
   };
   const blijft = () => veilig(() => lokaal.getItem(BLIJVEN) === "1", false);
+  // Na het afmelden komt er niets van een aanmelding meer bij, ook niet van een oproep die nog onderweg was (I4).
+  let dicht = false;
   return {
     blijft,
     /** Vóór het aanmelden: waar komt de sessie? */
@@ -55,6 +57,7 @@ export function maakOpslag(lokaal, tab) {
     },
     getItem: (sleutel) => veilig(() => lokaal.getItem(sleutel) ?? tab.getItem(sleutel), null),
     setItem(sleutel, waarde) {
+      if (dicht) return;
       veilig(() => {
         if (blijft()) {
           lokaal.setItem(sleutel, waarde);
@@ -73,8 +76,24 @@ export function maakOpslag(lokaal, tab) {
     wis() {
       for (const sleutel of [SLEUTEL, SLEUTEL + "-code-verifier", SLEUTEL + "-user", BLIJVEN, ACTIEF]) this.removeItem(sleutel);
     },
+    /** Bij het afmelden: alles weg, en daarna bewaart deze opslag geen sessie meer (review 1, I4). */
+    sluit() {
+      dicht = true;
+      this.wis();
+    },
+    /** Staat er een sessie in deze browser? Zonder netwerk, en zonder ze te vernieuwen. */
+    heeftSessie: () => veilig(() => (lokaal.getItem(SLEUTEL) ?? tab.getItem(SLEUTEL)) !== null, false),
+    /** Het toegangsbewijs zoals het in de opslag staat, of niets. */
+    token() {
+      try {
+        const sessie = JSON.parse(this.getItem(SLEUTEL) ?? "null");
+        return sessie && typeof sessie.access_token === "string" ? sessie.access_token : null;
+      } catch {
+        return null;
+      }
+    },
     /** De laatste activiteit, in dit tabblad. */
-    raak: (nu) => veilig(() => tab.setItem(ACTIEF, String(nu))),
+    raak: (nu) => (dicht ? undefined : veilig(() => tab.setItem(ACTIEF, String(nu)))),
     laatste: () => veilig(() => Number(tab.getItem(ACTIEF)) || 0, 0),
     bericht: (tekst) => veilig(() => (tekst ? tab.setItem(BERICHT, tekst) : tab.removeItem(BERICHT))),
     leesBericht: () => veilig(() => tab.getItem(BERICHT), null),
@@ -237,26 +256,29 @@ export async function geefCode(koppeling, code) {
   }
 }
 
-/** Afmelden: de sessie bij Supabase beëindigen, en alles van de aanmelding uit de browser wissen. */
-export async function afmelden(bericht = null) {
-  if (client) {
-    try {
-      await client.auth.signOut({ scope: "local" });
-    } catch {
-      // zonder verbinding blijft de sessie bij Supabase bestaan, maar deze browser kent ze niet meer
-    }
-  }
-  if (opslag) {
-    opslag.wis();
-    opslag.bericht(bericht);
-  }
+/**
+ * Afmelden, eerst in deze browser: alles van de aanmelding is meteen weg, ook zonder netwerk, en niets
+ * schrijft het nog terug (review 1, I4). Geeft het toegangsbewijs terug waarmee de pagina de sessie
+ * daarna ook bij Supabase beëindigt (data.js). Dat laatste mag mislukken: deze browser kent ze niet meer.
+ */
+export function afmeldenLokaal(bericht = null) {
+  if (!opslag) return null;
+  const token = opslag.token();
+  opslag.sluit();
+  opslag.bericht(bericht);
+  return token;
 }
 
-/** Meldt het als een ander tabblad afmeldt. */
+/** Meldt het als een ander tabblad afmeldt: via supabase-js, of doordat de gedeelde sessie uit de opslag verdween. */
 export function opAfgemeld(actie) {
   if (client) client.auth.onAuthStateChange((gebeurtenis) => (gebeurtenis === "SIGNED_OUT" ? setTimeout(actie, 0) : undefined));
+  globalThis.addEventListener("storage", (gebeurtenis) => {
+    if (gebeurtenis.key === SLEUTEL && gebeurtenis.newValue === null) actie();
+  });
 }
 
+/** Staat er een sessie in deze browser? Zonder netwerk. */
+export const heeftSessie = () => (opslag ? opslag.heeftSessie() : false);
 export const blijft = () => (opslag ? opslag.blijft() : false);
 export const naarTab = () => (opslag ? opslag.naarTab() : undefined);
 export const raak = (nu = Date.now()) => (opslag ? opslag.raak(nu) : undefined);

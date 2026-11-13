@@ -1,4 +1,4 @@
-// MT · aanmelden.js · versie 0.6.0
+// MT · aanmelden.js · versie 0.6.1
 // Het aanmeldscherm (17.2, canvas: bord "Aanmelden met tweestapsverificatie"). De eerste keer vier
 // stappen: tijdelijk wachtwoord, eigen wachtwoord kiezen, app koppelen, code. Daarna twee: wachtwoord
 // en code. Welke stap volgt, beslist dit scherm niet zelf: het vraagt de stand van het account aan de
@@ -12,7 +12,7 @@ import * as data from "./data.js";
 import { ACCOUNTFUNCTIE, ACCOUNTFUNCTIE_VERSIE, MAILVOORBEELD } from "./config.js";
 import { html, zet } from "./ui.js";
 
-export const VERSIE = "0.6.0";
+export const VERSIE = "0.6.1";
 
 // ---------- Welke stap volgt ----------
 
@@ -414,7 +414,17 @@ export function start({ kaart, appNaam, bericht = null, afmelden }) {
 
     if (n.aal === "aal2") {
       const account = await data.rpc("mt_mijn_account");
-      if (account.ok) return klaar({ account: account.gegevens, niveau: n, nietBlijven: z.nietBlijven === true });
+      if (account.ok) {
+        // Ook wie al aangemeld was, volgt de instelling van zijn rol (B148): staat "Aangemeld blijven"
+        // intussen uit, dan verhuist de onthouden sessie naar dit tabblad (review 1, I5).
+        const instellingen = account.gegevens.instellingen;
+        if (auth.blijft() && instellingen && instellingen.aangemeld_blijven === false) {
+          auth.naarTab();
+          auth.raak();
+          z.nietBlijven = true;
+        }
+        return klaar({ account: account.gegevens, niveau: n, nietBlijven: z.nietBlijven === true });
+      }
       if (account.soort === "verbinding") return toonKanNiet("Geen verbinding", account.tekst, true);
       if (account.soort === "ontbreekt") return toonKanNiet("De databank is nog niet bijgewerkt", "Voer sql/004_accounts.sql uit in Supabase, en probeer het dan opnieuw.", true);
     }

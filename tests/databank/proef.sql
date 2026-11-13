@@ -1986,6 +1986,186 @@ select proef.zeker('noodbeheerder: een beheerder met een tijdelijk wachtwoord va
      from public.gebruikers where id = proef.id(65))
   and exists (select 1 from public.account_operaties o where o.soort = 'noodbeheerder' and o.voor = proef.id(65) and o.resultaat = 'gelukt'));
 
+-- ============================================================================================
+-- De regels per tabel, uit één lijst (review 1: O3)
+-- ============================================================================================
+-- De proef hierboven leest de tabellen die ze zelf vult. Een tabel die nog leeg is, toont met elke
+-- regel niets: een te ruime regel viel daar dus niet op. Daarom staat hier, los van script 002, voor
+-- élke tabel wat ze hoort te hebben: wie ze leest, en wat een beheerder er rechtstreeks in schrijft
+-- (i = toevoegen, u = wijzigen, d = wissen). De proef bouwt uit deze lijst de regel die ze verwacht,
+-- en vergelijkt die met de regel die er staat. Een nieuwe tabel moet dus ook in deze lijst komen.
+create temp table proef_regels (tabel text primary key, lezen text not null, kolom text, schrijven text not null default '');
+insert into proef_regels (tabel, lezen, kolom, schrijven) values
+  -- zonder leerlingen: elke gebruiker van de MT
+  ('schooljaren', 'ieder', null, 'jaar'), ('statussen', 'ieder', null, 'iud'), ('klassen', 'ieder', null, 'iu'), ('klas_namen', 'ieder', null, ''),
+  ('lopende_activiteiten', 'ieder', null, 'iud'), ('lopende_activiteit_klassen', 'ieder', null, 'id'), ('kostenregels', 'ieder', null, 'iud'),
+  ('tarieven', 'ieder', null, 'iud'), ('activiteiten', 'ieder', null, 'u'), ('beurt_kosten', 'ieder', null, 'iud'), ('klaslijsten', 'ieder', null, ''),
+  ('tussenkomsten', 'ieder', null, 'iud'),
+  -- beheerder en lezer
+  ('voorschotten', 'alles', null, 'iud'), ('informat_codes', 'alles', null, 'iud'), ('schoolverlaters', 'alles', null, 'iud'), ('imports', 'alles', null, ''),
+  ('taken', 'alles', null, ''), ('plafondrekeningen', 'alles', null, ''), ('beginbedragen', 'alles', null, 'iud'), ('afwijkingen', 'alles', null, ''),
+  ('afwijking_leerlingen', 'alles', null, ''), ('facturaties', 'alles', null, ''), ('facturatie_leerlingen', 'alles', null, ''),
+  ('facturatieregels', 'alles', null, ''), ('herstelregistraties', 'alles', null, ''), ('verdelingen', 'alles', null, ''),
+  ('verdeling_leerlingen', 'alles', null, ''), ('facturatie_bestanden', 'alles', null, ''), ('bewaarde_rapporten', 'alles', null, ''),
+  ('bewaard_rapport_leerlingen', 'alles', null, ''), ('jaarafsluitingen', 'alles', null, ''), ('jaarafsluiting_leerlingen', 'alles', null, ''),
+  ('jaarafsluiting_regels', 'alles', null, ''), ('jaarafsluiting_activiteiten', 'alles', null, ''),
+  -- enkel een beheerder
+  ('instellingen', 'beheer', null, 'u'), ('account_operaties', 'beheer', null, ''), ('interne_notities', 'beheer', null, 'iud'),
+  ('logboek', 'beheer', null, ''), ('backups', 'beheer', null, ''),
+  -- de eigen rij, en de beheerder alle
+  ('gebruikers', 'beheer_of_eigen', 'id', ''), ('klastoewijzingen', 'beheer_of_eigen', 'gebruiker_id', ''), ('gebruiker_voorkeuren', 'eigen', 'gebruiker_id', ''),
+  -- een leerkracht: de leerlingen van haar klassen
+  ('leerlingen', 'mijn_leerlingen', 'id', 'iu'), ('klasindelingen', 'klas_of_nu', null, 'iud'), ('annulering_betalers', 'mijn_leerlingen', 'leerling_id', 'id'),
+  -- een leerkracht: de lijsten van haar klassen, en alles van wie vandaag in haar klas zit
+  ('afwezigheden', 'lijst_of_nu', null, ''), ('deelname', 'lijst_of_nu', null, ''), ('opmerkingen', 'lijst_of_nu', null, ''),
+  ('deelnemers', 'lijst_of_nu', null, 'id'), ('wijzigingen', 'lijst_of_nu', null, ''),
+  ('bevestigingen', 'lijst', null, ''), ('wijzigingsaanvragen', 'lijst', null, ''),
+  ('bevestiging_leerlingen', 'bevestiging_of_nu', null, ''), ('bevestiging_dagen', 'bevestiging_of_nu', null, ''),
+  ('wijzigingsaanvraag_regels', 'aanvraag', null, ''), ('correcties', 'correctie', null, 'iud'), ('correctie_leerlingen', 'nu', null, 'iud');
+
+-- De leesregel bij een soort, in de woorden van de proef zelf.
+create function proef.leesregel(p_soort text, p_kolom text) returns text language sql immutable as $$
+  select case p_soort
+    when 'ieder' then '(select mt_intern.mt_rol()) is not null'
+    when 'alles' then '(select mt_intern.mt_leest_alles())'
+    when 'beheer' then '(select mt_intern.mt_is_beheerder())'
+    when 'beheer_of_eigen' then format('(select mt_intern.mt_is_beheerder()) or %I = (select auth.uid())', p_kolom)
+    when 'eigen' then format('%I = (select auth.uid())', p_kolom)
+    when 'mijn_leerlingen' then format('(select mt_intern.mt_leest_alles()) or %I = any ((select mt_intern.mt_mijn_leerlingen())::uuid[])', p_kolom)
+    when 'klas_of_nu' then '(select mt_intern.mt_leest_alles()) or klas_id = any ((select mt_intern.mt_mijn_klassen())::uuid[]) or leerling_id = any ((select mt_intern.mt_mijn_leerlingen_nu())::uuid[])'
+    when 'lijst_of_nu' then '(select mt_intern.mt_leest_alles()) or mt_intern.mt_mag_lijst(activiteit_id, klas_id) or leerling_id = any ((select mt_intern.mt_mijn_leerlingen_nu())::uuid[])'
+    when 'lijst' then '(select mt_intern.mt_leest_alles()) or mt_intern.mt_mag_lijst(activiteit_id, klas_id)'
+    when 'bevestiging_of_nu' then '(select mt_intern.mt_leest_alles()) or mt_intern.mt_mag_bevestiging(bevestiging_id) or leerling_id = any ((select mt_intern.mt_mijn_leerlingen_nu())::uuid[])'
+    when 'aanvraag' then '(select mt_intern.mt_leest_alles()) or mt_intern.mt_mag_aanvraag(aanvraag_id)'
+    when 'correctie' then '(select mt_intern.mt_leest_alles()) or mt_intern.mt_mag_correctie(id)'
+    when 'nu' then '(select mt_intern.mt_leest_alles()) or leerling_id = any ((select mt_intern.mt_mijn_leerlingen_nu())::uuid[])'
+  end
+$$;
+
+-- Vergelijkt één regel van een tabel met wat verwacht wordt. De proef maakt de verwachte regel even
+-- zelf aan op dezelfde tabel, zodat Postgres beide op dezelfde manier uitschrijft. Geeft wat niet klopt, of niets.
+create function proef.regel_klopt(p_tabel text, p_naam text, p_soort text, p_voor text, p_using text, p_check text) returns text
+language plpgsql as $$
+declare
+  v_echt record;
+  v_verwacht record;
+begin
+  execute format('create policy proef_verwacht on public.%I as %s for %s to authenticated %s %s', p_tabel, p_soort, p_voor,
+                 case when p_using is null then '' else 'using (' || p_using || ')' end,
+                 case when p_check is null then '' else 'with check (' || p_check || ')' end);
+  select p.polcmd, p.polpermissive, p.polroles, pg_get_expr(p.polqual, p.polrelid) as q, pg_get_expr(p.polwithcheck, p.polrelid) as c
+    into v_verwacht from pg_policy p where p.polrelid = ('public.' || quote_ident(p_tabel))::regclass and p.polname = 'proef_verwacht';
+  select p.polcmd, p.polpermissive, p.polroles, pg_get_expr(p.polqual, p.polrelid) as q, pg_get_expr(p.polwithcheck, p.polrelid) as c
+    into v_echt from pg_policy p where p.polrelid = ('public.' || quote_ident(p_tabel))::regclass and p.polname = p_naam;
+  execute format('drop policy proef_verwacht on public.%I', p_tabel);
+  if v_echt is null then
+    return p_tabel || ': de regel ' || p_naam || ' ontbreekt';
+  end if;
+  if v_echt is distinct from v_verwacht then
+    return p_tabel || ': ' || p_naam || ' is ' || coalesce(v_echt.q, '-') || ' / ' || coalesce(v_echt.c, '-')
+           || case when v_echt.polpermissive is distinct from v_verwacht.polpermissive then ' (niet ' || p_soort || ')' else '' end;
+  end if;
+  return null;
+end $$;
+
+select proef.zeker('regels: elke tabel van de MT staat in de lijst van de proef, en omgekeerd (O3)',
+  not exists (select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+               where n.nspname = 'public' and c.relkind = 'r' and c.relname not in (select tabel from proef_regels))
+  and not exists (select 1 from proef_regels r where to_regclass('public.' || r.tabel) is null),
+  (select string_agg(c.relname, ', ') from pg_class c join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relkind = 'r' and c.relname not in (select tabel from proef_regels)));
+select proef.zeker('regels: op elke tabel staat RLS aan',
+  not exists (select 1 from proef_regels r join pg_class c on c.oid = ('public.' || r.tabel)::regclass where not c.relrowsecurity));
+select proef.zeker('regels: op elke tabel is de tweestapsverificatie een aparte, beperkende regel voor elke handeling (O3)',
+  x.fout is null, x.fout)
+  from (select string_agg(proef.regel_klopt(r.tabel, 'mt_tweestaps', 'restrictive', 'all', '(select mt_intern.mt_mfa_ok())', '(select mt_intern.mt_mfa_ok())'), '; ') as fout
+          from proef_regels r) x;
+select proef.zeker('regels: de leesregel van elke tabel is die van de lijst, ook van een tabel die nog leeg is (O3)',
+  x.fout is null, x.fout)
+  from (select string_agg(proef.regel_klopt(r.tabel, 'mt_lezen', 'permissive', 'select', proef.leesregel(r.lezen, r.kolom), null), '; ') as fout
+          from proef_regels r) x;
+select proef.zeker('regels: rechtstreeks toevoegen, wijzigen en wissen kan enkel een beheerder, en enkel waar de lijst het zegt (O3)',
+  x.fout is null, x.fout)
+  from (select string_agg(f.fout, '; ') as fout
+          from proef_regels r
+          cross join lateral (values
+            ('i', 'mt_beheer_toevoegen', 'insert', null, '(select mt_intern.mt_is_beheerder())'),
+            ('u', 'mt_beheer_wijzigen', 'update', '(select mt_intern.mt_is_beheerder())', '(select mt_intern.mt_is_beheerder())'),
+            ('d', 'mt_beheer_wissen', 'delete', '(select mt_intern.mt_is_beheerder())', null)) as w(letter, naam, voor, gebruik, nazicht)
+          cross join lateral (select case
+            when r.schrijven <> 'jaar' and position(w.letter in r.schrijven) > 0 then proef.regel_klopt(r.tabel, w.naam, 'permissive', w.voor, w.gebruik, w.nazicht)
+            when r.schrijven <> 'jaar' and exists (select 1 from pg_policy p where p.polrelid = ('public.' || r.tabel)::regclass and p.polname = w.naam)
+              then r.tabel || ': de regel ' || w.naam || ' hoort er niet' end as fout) f) x;
+-- Een schooljaar: aanmaken en wissen enkel zolang het in te vullen is, en wijzigen niet meer na het afsluiten (B144, B169).
+select proef.zeker('regels: een schooljaar schrijf je enkel zolang zijn stand het toelaat (O3)',
+  x.fout is null, x.fout)
+  from (select nullif(concat_ws('; ',
+          proef.regel_klopt('schooljaren', 'mt_beheer_toevoegen', 'permissive', 'insert', null, $q$(select mt_intern.mt_is_beheerder()) and stand = 'in_te_vullen'$q$),
+          proef.regel_klopt('schooljaren', 'mt_beheer_wijzigen', 'permissive', 'update', $q$(select mt_intern.mt_is_beheerder()) and stand <> 'afgesloten'$q$, '(select mt_intern.mt_is_beheerder())'),
+          proef.regel_klopt('schooljaren', 'mt_beheer_wissen', 'permissive', 'delete', $q$(select mt_intern.mt_is_beheerder()) and stand = 'in_te_vullen'$q$, null)), '') as fout) x;
+select proef.zeker('regels: geen enkele tabel heeft een regel die niet in de lijst staat (O3)',
+  x.fout is null, x.fout)
+  from (select string_agg(r.tabel || ': ' || t.aantal || ' regels in plaats van ' || (2 + case r.schrijven when 'jaar' then 3 else length(r.schrijven) end), '; ') as fout
+          from proef_regels r
+          cross join lateral (select count(*) as aantal from pg_policy p where p.polrelid = ('public.' || r.tabel)::regclass) t
+         where t.aantal <> 2 + case r.schrijven when 'jaar' then 3 else length(r.schrijven) end) x;
+-- De rechten volgen dezelfde lijst: lezen overal, schrijven enkel wat de lijst zegt. anon en de serverfunctie niets.
+select proef.zeker('regels: de rechten van een aangemelde gebruiker volgen de lijst: toevoegen, wijzigen en wissen enkel waar het mag (O3)',
+  x.fout is null, x.fout)
+  from (select string_agg(r.tabel || ': ' || k.wat, '; ') as fout
+          from proef_regels r
+          cross join lateral (select ('public.' || r.tabel)::regclass as t, case r.schrijven when 'jaar' then 'iud' else r.schrijven end as mag) m
+          cross join lateral (values
+            ('lezen', has_table_privilege('authenticated', m.t, 'select'), true),
+            ('toevoegen', has_table_privilege('authenticated', m.t, 'insert') or has_any_column_privilege('authenticated', m.t, 'insert'), position('i' in m.mag) > 0),
+            ('wijzigen', has_table_privilege('authenticated', m.t, 'update') or has_any_column_privilege('authenticated', m.t, 'update'), position('u' in m.mag) > 0),
+            ('wissen', has_table_privilege('authenticated', m.t, 'delete'), position('d' in m.mag) > 0),
+            ('leegmaken of beheren', has_table_privilege('authenticated', m.t, 'truncate') or has_table_privilege('authenticated', m.t, 'references')
+                                     or has_table_privilege('authenticated', m.t, 'trigger'), false)) as k(wat, heeft, hoort)
+         where k.heeft is distinct from k.hoort) x;
+
+-- Elke soort leesregel doet ook wat ze zegt, op een tabel met rijen: een beheerder, een leerkracht
+-- zonder klassen en een lezer, elk in orde.
+insert into auth.users (id, email) select proef.id(n), 'soort' || n || '@voorbeeld.test' from generate_series(71, 73) n;
+insert into auth.sessions (id, user_id) select proef.id(n), proef.id(n) from generate_series(71, 73) n;
+insert into auth.mfa_factors (id, user_id, factor_type, status) select proef.id(n), proef.id(n), 'totp', 'verified' from generate_series(71, 73) n;
+insert into public.gebruikers (id, naam, email, rol, actief, wachtwoord_tijdelijk, tijdelijk_tot, eerste_aanmelding_afgerond, app_koppelen, app_factor) values
+  (proef.id(71), 'Proef Soort Beheerder', 'soort71@voorbeeld.test', 'beheerder', true, false, null, true, false, proef.id(71)),
+  (proef.id(72), 'Proef Soort Leerkracht', 'soort72@voorbeeld.test', 'leerkracht', true, false, null, true, false, proef.id(72)),
+  (proef.id(73), 'Proef Soort Lezer', 'soort73@voorbeeld.test', 'lezer', true, false, null, true, false, proef.id(73));
+insert into public.gebruiker_voorkeuren (gebruiker_id, voorkeuren) select proef.id(n), '{}'::jsonb from generate_series(71, 73) n
+  on conflict (gebruiker_id) do nothing;
+create temp table proef_soorten (tabel text, beheerder text, leerkracht text, lezer text);
+insert into proef_soorten values
+  ('klassen', 'alle', 'alle', 'alle'), ('activiteiten', 'alle', 'alle', 'alle'),
+  ('taken', 'alle', 'geen', 'alle'),
+  ('instellingen', 'alle', 'geen', 'geen'), ('account_operaties', 'alle', 'geen', 'geen'), ('logboek', 'alle', 'geen', 'geen'),
+  ('gebruikers', 'alle', 'eigen', 'eigen'), ('gebruiker_voorkeuren', 'eigen', 'eigen', 'eigen');
+create temp table proef_gelezen (tabel text, rol text, verwacht bigint, gezien bigint);
+do $$
+declare
+  r record;
+  v_alle bigint;
+  v_wie integer;
+  v_rol text;
+  v_wat text;
+begin
+  for r in select * from proef_soorten loop
+    execute format('select count(*) from public.%I', r.tabel) into v_alle;
+    for v_wie, v_rol, v_wat in values (71, 'beheerder', r.beheerder), (72, 'leerkracht', r.leerkracht), (73, 'lezer', r.lezer) loop
+      perform proef.aangemeld(proef.id(v_wie));
+      insert into proef_gelezen
+      select r.tabel, v_rol, case v_wat when 'alle' then v_alle when 'eigen' then 1 else 0 end, proef.tel(format('select 1 from public.%I', r.tabel));
+    end loop;
+  end loop;
+end $$;
+select proef.zeker('regels: elke soort leesregel heeft een tabel met rijen om op te proeven',
+  not exists (select 1 from proef_gelezen g where g.rol = 'beheerder' and g.verwacht = 0),
+  (select string_agg(g.tabel, ', ') from proef_gelezen g where g.rol = 'beheerder' and g.verwacht = 0));
+select proef.zeker('regels: een beheerder, een leerkracht zonder klassen en een lezer lezen elk precies wat hun soort regel zegt (O3)',
+  not exists (select 1 from proef_gelezen g where g.gezien is distinct from g.verwacht),
+  (select string_agg(g.tabel || ' als ' || g.rol || ': ' || g.gezien || ' in plaats van ' || g.verwacht, '; ') from proef_gelezen g where g.gezien is distinct from g.verwacht));
+
 -- ---------- De uitslag ----------
 
 \o

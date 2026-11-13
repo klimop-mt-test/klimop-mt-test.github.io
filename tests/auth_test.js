@@ -238,18 +238,42 @@ Deno.test("koppelen: wat van een vorige poging bleef liggen, gaat eerst weg; de 
   assert.match((await auth.geefCode("nieuw", "000000")).tekst, /code klopt niet/);
 });
 
-Deno.test("afmelden: enkel deze sessie bij Supabase, alles weg uit de browser, en een ander tabblad hoort het", async () => {
+Deno.test("afmelden: eerst in deze browser: alles weg zonder netwerk, en daarna bewaart de opslag geen sessie meer (I4)", async () => {
+  const s = bibliotheek(), lokaal = opslag(), tab = opslag();
+  auth.stel(OMGEVING, { lib: s.lib, lokaal, tab });
+  await auth.aanmelden("proef@voorbeeld.test", "juist wachtwoord", true);
+  // Zoals supabase-js de sessie bewaart: als JSON, met het toegangsbewijs erin.
+  lokaal.setItem("mt_auth", JSON.stringify({ access_token: "a.b.c", refresh_token: "vernieuwen" }));
+  assert.equal(auth.heeftSessie(), true);
+  const voor = s.oproepen.length;
+  const token = auth.afmeldenLokaal("Je bent afgemeld: er gebeurde 30 minuten niets.");
+  assert.equal(token, "a.b.c", "het toegangsbewijs komt terug, om de sessie ook bij Supabase te beëindigen");
+  assert.equal(s.oproepen.length, voor, "afmelden in de browser wacht op geen enkele oproep");
+  assert.equal(lokaal.m.size, 0);
+  assert.deepEqual([...tab.m.keys()], ["mt_auth_bericht"]);
+  assert.equal(auth.heeftSessie(), false);
+  // Een oproep die nog onderweg was, zet de sessie niet terug.
+  const kast = auth.maakOpslag(lokaal, tab);
+  kast.setItem("mt_auth", '{"access_token":"a.b.c"}');
+  assert.equal(kast.heeftSessie(), true, "een nieuwe opslag bewaart wel");
+  kast.sluit();
+  kast.setItem("mt_auth", '{"access_token":"a.b.c"}');
+  kast.raak(123);
+  assert.deepEqual([kast.heeftSessie(), kast.laatste(), kast.token()], [false, 0, null], "na het sluiten kwam er toch nog iets in de opslag");
+  assert.equal(auth.haalBericht(), "Je bent afgemeld: er gebeurde 30 minuten niets.");
+  assert.equal(auth.haalBericht(), null, "het bericht toont maar één keer");
+});
+
+Deno.test("afmelden: een ander tabblad hoort het, via supabase-js of doordat de gedeelde sessie verdween", async () => {
   const s = bibliotheek(), lokaal = opslag(), tab = opslag();
   auth.stel(OMGEVING, { lib: s.lib, lokaal, tab });
   await auth.aanmelden("proef@voorbeeld.test", "juist wachtwoord", true);
   let gehoord = 0;
   auth.opAfgemeld(() => gehoord++);
-  await auth.afmelden("Je bent afgemeld: er gebeurde 30 minuten niets.");
-  assert.deepEqual(s.oproepen.at(-1), ["signOut", { scope: "local" }]);
-  assert.equal(lokaal.m.size, 0);
-  assert.deepEqual([...tab.m.keys()], ["mt_auth_bericht"]);
-  assert.equal(auth.haalBericht(), "Je bent afgemeld: er gebeurde 30 minuten niets.");
-  assert.equal(auth.haalBericht(), null, "het bericht toont maar één keer");
-  await new Promise((klaar) => setTimeout(klaar, 5));
+  const meld = (key, newValue) => globalThis.dispatchEvent(Object.assign(new Event("storage"), { key, newValue }));
+  meld("mt_auth", '{"access_token":"x.y.z"}');
+  meld("iets_anders", null);
+  assert.equal(gehoord, 0, "een vernieuwde sessie of een andere sleutel is geen afmelding");
+  meld("mt_auth", null);
   assert.equal(gehoord, 1);
 });

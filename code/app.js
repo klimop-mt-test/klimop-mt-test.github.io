@@ -1,4 +1,4 @@
-// MT · app.js · versie 0.6.0
+// MT · app.js · versie 0.6.1
 // De start (17.1): nooit in een andere pagina, dezelfde versie in alle bestanden, de omgeving uit
 // het adres, de verbinding met de databank, en sinds stap 2 de aanmelding, het afmelden (17.2) en
 // de weg naar het scherm Gebruikers. Later ook de tabbladen en de keuzebalk scherp of minder scherp (B75).
@@ -8,7 +8,7 @@
 // die tot tien minuten toe), dan haalt de MT de bestanden één keer vers op en herlaadt. Lukt dat
 // niet, dan start ze niet en zegt ze wat je kan doen.
 
-export const VERSIE = "0.6.0";
+export const VERSIE = "0.6.1";
 
 /** De bestanden die de MT laadt. Elk heeft export const VERSIE; een test bewaakt deze lijst. */
 const MODULES = ["./config.js", "./ui.js", "./data.js", "./auth.js", "./aanmelden.js", "./gebruikers.js"];
@@ -72,11 +72,15 @@ async function start() {
 
   // 6. Afmelden gebeurt op één plaats, en herlaadt de pagina: zo blijft er niets van de vorige
   //    aanmelding in het geheugen, ook geen geopend venster (T5).
+  //    Eerst in deze browser, dan pas bij Supabase: het scherm gaat meteen op slot en de sessie is
+  //    meteen uit de opslag, ook als het netwerk traag is of wegvalt (review 1, I4).
   let weg = false;
   const afmelden = async (bericht = null) => {
     if (weg) return;
     weg = true;
-    await auth.afmelden(bericht);
+    ui.vergrendel();
+    const token = auth.afmeldenLokaal(bericht);
+    await data.afmeldenBijSupabase(token);
     location.reload();
   };
   auth.opAfgemeld(() => {
@@ -137,20 +141,26 @@ async function controleer(ui, data) {
  */
 function bewaakStilte(auth, afmelden) {
   let laatst = 0;
+  // Synchroon, zonder netwerk en zonder te wachten: tussen het nakijken en het besluit kan zo niets schuiven.
+  const teLang = () => auth.heeftSessie() && !auth.blijft() && auth.teLangStil(auth.laatste(), Date.now(), stilMinuten);
+  const stilAf = () => afmelden("Je bent afgemeld: er gebeurde " + stilMinuten + " minuten niets.");
   const activiteit = () => {
     const nu = Date.now();
     if (nu - laatst < 15000) return;
+    // Eerst de vorige termijn. Wie na een lange pauze terugkomt, bv. na de slaapstand, verlengt de sessie
+    // niet met zijn eerste klik of toets: die klik meldt af (review 1, I4).
+    if (teLang()) {
+      stilAf();
+      return;
+    }
     laatst = nu;
     auth.raak(nu);
   };
   for (const soort of ["pointerdown", "keydown", "scroll", "touchstart"]) {
     window.addEventListener(soort, activiteit, { passive: true, capture: true });
   }
-  const kijk = async () => {
-    if (auth.blijft() || !(await auth.token())) return;
-    if (auth.teLangStil(auth.laatste(), Date.now(), stilMinuten)) {
-      await afmelden("Je bent afgemeld: er gebeurde " + stilMinuten + " minuten niets.");
-    }
+  const kijk = () => {
+    if (teLang()) stilAf();
   };
   setInterval(kijk, 30000);
   document.addEventListener("visibilitychange", () => {

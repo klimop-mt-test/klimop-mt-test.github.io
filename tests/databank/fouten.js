@@ -1002,3 +1002,72 @@ export const FOUTEN = [
     wedloop: true,
   },
 ];
+
+// ---------- 002: de regels per tabel, uit één lijst (review 1: O3) ----------
+// Voor elke tabel van script 002 één fout: haar leesregel wordt ruimer. De proef vergelijkt de regel
+// van elke tabel met haar eigen lijst, dus ook een tabel die nog leeg is, valt op. Een nieuwe tabel
+// komt in de lijst van 002, in de lijst van de proef, en hier.
+const LEZEN_002 = {
+  ieder: ["schooljaren", "statussen", "klassen", "klas_namen", "lopende_activiteiten", "lopende_activiteit_klassen", "kostenregels", "tarieven", "activiteiten",
+    "beurt_kosten", "klaslijsten", "tussenkomsten"],
+  alles: ["voorschotten", "informat_codes", "schoolverlaters", "imports", "taken", "plafondrekeningen", "beginbedragen", "afwijkingen", "afwijking_leerlingen",
+    "facturaties", "facturatie_leerlingen", "facturatieregels", "herstelregistraties", "verdelingen", "verdeling_leerlingen", "facturatie_bestanden",
+    "bewaarde_rapporten", "bewaard_rapport_leerlingen", "jaarafsluitingen", "jaarafsluiting_leerlingen", "jaarafsluiting_regels", "jaarafsluiting_activiteiten"],
+  beheer: ["instellingen", "account_operaties", "interne_notities", "logboek", "backups"],
+  // de eigen rij, en de beheerder alle
+  beheerOfEigen: ["gebruikers", "klastoewijzingen"],
+  // beheerder en lezer, en een leerkracht voor haar klassen of haar leerlingen
+  allesOf: ["leerlingen", "klasindelingen", "annulering_betalers", "afwezigheden", "deelname", "opmerkingen", "deelnemers", "wijzigingen", "bevestigingen",
+    "wijzigingsaanvragen", "bevestiging_leerlingen", "bevestiging_dagen", "wijzigingsaanvraag_regels", "correcties", "correctie_leerlingen"],
+};
+const ruimer = (tabel, oud, nieuw, wie) => FOUTEN.push({ script: "002_databank.sql", naam: "de leesregel van " + tabel + ": ook voor " + wie, oud, nieuw });
+for (const tabel of LEZEN_002.ieder) ruimer(tabel, "('" + tabel + "', ieder)", "('" + tabel + "', 'true')", "wie geen gebruiker van de MT is");
+for (const tabel of LEZEN_002.alles) ruimer(tabel, "('" + tabel + "', alles)", "('" + tabel + "', ieder)", "een leerkracht");
+for (const tabel of LEZEN_002.beheer) ruimer(tabel, "('" + tabel + "', beheer)", "('" + tabel + "', alles)", "een lezer");
+for (const tabel of LEZEN_002.beheerOfEigen) ruimer(tabel, "('" + tabel + "', beheer || ", "('" + tabel + "', alles || ", "een lezer");
+for (const tabel of LEZEN_002.allesOf) ruimer(tabel, "('" + tabel + "', alles || ", "('" + tabel + "', ieder || ' or ' || alles || ", "elke leerkracht");
+ruimer("gebruiker_voorkeuren", "('gebruiker_voorkeuren', 'gebruiker_id = (select auth.uid())')", "('gebruiker_voorkeuren', beheer || ' or gebruiker_id = (select auth.uid())')", "de beheerder");
+
+// Rechtstreeks schrijven: waar een beheerder niet alles mag, komt er een handeling bij.
+for (const [tabel, mag] of [["instellingen", "u"], ["klassen", "iu"], ["leerlingen", "iu"], ["lopende_activiteit_klassen", "id"], ["activiteiten", "u"], ["deelnemers", "id"],
+  ["annulering_betalers", "id"]]) {
+  FOUTEN.push({ script: "002_databank.sql", naam: "rechtstreeks schrijven in " + tabel + ": meer dan " + mag, oud: "('" + tabel + "', '" + mag + "')", nieuw: "('" + tabel + "', 'iud')" });
+}
+FOUTEN.push(
+  {
+    script: "002_databank.sql",
+    naam: "de tweestapsverificatie is geen beperkende regel meer",
+    oud: "'create policy mt_tweestaps on public.%I as restrictive for all to authenticated '",
+    nieuw: "'create policy mt_tweestaps on public.%I for all to authenticated '",
+  },
+  {
+    script: "002_databank.sql",
+    naam: "de regel van de tweestapsverificatie laat alles door",
+    oud: "|| 'using ((select mt_intern.mt_mfa_ok())) with check ((select mt_intern.mt_mfa_ok()))', r.tabel);",
+    nieuw: "|| 'using (true) with check (true)', r.tabel);",
+  },
+  {
+    script: "002_databank.sql",
+    naam: "rechtstreeks schrijven ook voor een lezer",
+    oud: "  r record;\n  beheer constant text := '(select mt_intern.mt_is_beheerder())';\nbegin\n  for r in\n    select t.tabel, t.wat from",
+    nieuw: "  r record;\n  beheer constant text := '(select mt_intern.mt_leest_alles())';\nbegin\n  for r in\n    select t.tabel, t.wat from",
+  },
+  {
+    script: "002_databank.sql",
+    naam: "een schooljaar aanmaken in elke stand",
+    oud: "  with check ((select mt_intern.mt_is_beheerder()) and stand = 'in_te_vullen');",
+    nieuw: "  with check ((select mt_intern.mt_is_beheerder()));",
+  },
+  {
+    script: "002_databank.sql",
+    naam: "een afgesloten schooljaar wijzigen",
+    oud: "  using ((select mt_intern.mt_is_beheerder()) and stand <> 'afgesloten')",
+    nieuw: "  using ((select mt_intern.mt_is_beheerder()))",
+  },
+  {
+    script: "002_databank.sql",
+    naam: "een schooljaar wissen in elke stand",
+    oud: "  using ((select mt_intern.mt_is_beheerder()) and stand = 'in_te_vullen');",
+    nieuw: "  using ((select mt_intern.mt_is_beheerder()));",
+  },
+);

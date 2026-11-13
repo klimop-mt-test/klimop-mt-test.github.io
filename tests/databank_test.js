@@ -61,6 +61,10 @@ async function doe(programma, args, { env, stil = false } = {}) {
 }
 
 const pad = (bestand) => decodeURIComponent(new URL(bestand, MAP).pathname);
+/** Zoveel ingebouwde fouten tegelijk; de rekenaar van GitHub heeft vier kernen. */
+const GELIJK = Math.max(1, Number(instelling("MT_FOUTEN_GELIJK") || "4") || 1);
+/** Om bij het bouwen enkel de fouten van bepaalde scripts te draaien, bv. MT_FOUTEN_SCRIPT=002 of 003,004. Leeg: alle. */
+const ENKEL = instelling("MT_FOUTEN_SCRIPT");
 
 /**
  * De wedloop (review 1: I3 en I1): twee verbindingen tegelijk, zoals twee beheerders of twee tabbladen.
@@ -202,6 +206,7 @@ Deno.test({
     const lukt = (r, wat) => assert.equal(r.code, 0, wat + " mislukte:\n" + r.fout + "\n" + r.uit);
     const nietGevonden = [];
     const gevondenDoor = { "het script": 0, "een later script": 0, "de proef": 0, "de wedloop": 0 };
+    let gedaan = 0;
 
     try {
       lukt(await doe(bin + "/initdb", ["-D", gegevens, "-U", "supabase_admin", "-A", "trust", "-E", "UTF8", "--locale=C.UTF-8"]), "initdb");
@@ -216,14 +221,17 @@ Deno.test({
       // Per script: eerst een sjabloon met alles wat ervoor komt, dan elke fout op een eigen kopie,
       // en pas daarna het script zelf, zonder fout, voor wat volgt.
       for (const [i, script] of scripts.entries()) {
-        const fouten = FOUTEN.filter((f) => "sql/" + f.script === script);
+        const fouten = FOUTEN.filter((f) => "sql/" + f.script === script && (!ENKEL || ENKEL.split(",").some((begin) => f.script.startsWith(begin.trim()))));
         if (fouten.length) {
           const sjabloon = "sjabloon" + i;
           lukt(await psql("supabase_admin", "template1", ["-c", `create database ${sjabloon} template postgres`]), "het sjabloon");
           const bron = lees(script);
-          for (const [n, f] of fouten.entries()) {
+          // Elke fout op een eigen kopie. Een paar tegelijk: de kopieën staan los van elkaar.
+          const eenFout = async (n, f) => {
             const databank = "fout" + i + "_" + n;
             lukt(await psql("supabase_admin", "template1", ["-c", `create database ${databank} template ${sjabloon}`]), "de kopie voor een fout");
+            // Zoals de nabootsing het voor de eerste databank doet: een kopie neemt die rechten niet mee.
+            lukt(await psql("supabase_admin", "template1", ["-c", `grant all on database ${databank} to postgres`]), "de rechten op de kopie");
             const bestand = map + "/" + databank + ".sql";
             await Deno.writeTextFile(bestand, bron.replace(f.oud, () => f.nieuw));
 
@@ -248,13 +256,19 @@ Deno.test({
             if (door) gevondenDoor[door]++;
             else nietGevonden.push(f.naam);
             lukt(await psql("supabase_admin", "template1", ["-c", `drop database ${databank}`]), "opruimen");
-          }
+          };
+          const wachtrij = [...fouten.entries()];
+          const werker = async () => {
+            for (let volgende = wachtrij.shift(); volgende; volgende = wachtrij.shift()) await eenFout(volgende[0], volgende[1]);
+          };
+          await Promise.all(Array.from({ length: GELIJK }, werker));
+          gedaan += fouten.length;
         }
         lukt(await psql("postgres", "postgres", ["-f", pad(script)]), script);
       }
 
       console.log(
-        FOUTEN.length + " fouten ingebouwd; gevonden door het script: " + gevondenDoor["het script"] +
+        gedaan + (ENKEL ? " van de " + FOUTEN.length : "") + " fouten ingebouwd; gevonden door het script: " + gevondenDoor["het script"] +
           ", door een later script: " + gevondenDoor["een later script"] + ", door de proef: " + gevondenDoor["de proef"] +
           ", door de wedloop: " + gevondenDoor["de wedloop"],
       );
