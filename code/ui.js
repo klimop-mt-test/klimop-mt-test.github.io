@@ -1,4 +1,4 @@
-// MT · ui.js · versie 0.6.1
+// MT · ui.js · versie 0.6.2
 // De gedeelde onderdelen van de schermen (17.1). Het enige bestand dat HTML in de pagina zet
 // (regel 4, 17.10). Een scherm stelt zijn opbouw samen met het sjabloon html`…`: elke ingevoegde
 // waarde wordt daarin standaard tekst, zodat een naam nooit als opmaak op het scherm komt. Enkel
@@ -7,7 +7,7 @@
 // de meldingen onderaan. Later komen hier de statuslabels, het ballonnetje van de materialentool, de
 // filterbalk, tabellen en bedragen.
 
-export const VERSIE = "0.6.1";
+export const VERSIE = "0.6.2";
 
 // ---------- Tekst en opmaak ----------
 
@@ -74,14 +74,19 @@ export function toonStart({ versie, omgeving }) {
 /**
  * Bij het afmelden: meteen niets van de MT meer in beeld, geen scherm en geen venster, nog vóór de
  * pagina herlaadt. Zo blijft er niets leesbaar terwijl het netwerk traag is (review 1, I4).
+ * Het scherm is eerst leeg; de tekst komt er pas bij als het afmelden langer dan een halve seconde
+ * duurt. Zo flitst er bij een gewone afmelding niets voorbij (B217).
  */
 export function vergrendel() {
   $("vensters").replaceChildren();
   $("meldingen").replaceChildren();
   $("app").hidden = true;
   const laden = $("laden");
-  laden.textContent = "Je wordt afgemeld.";
+  laden.textContent = "";
   laden.hidden = false;
+  setTimeout(() => {
+    laden.textContent = "Je wordt afgemeld.";
+  }, 500);
 }
 
 export function toon(naam) {

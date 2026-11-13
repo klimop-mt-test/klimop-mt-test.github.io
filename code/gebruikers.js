@@ -1,4 +1,4 @@
-// MT · gebruikers.js · versie 0.6.1
+// MT · gebruikers.js · versie 0.6.2
 // Het scherm Gebruikers (3, 15, B165, B170; canvas: bord "Gebruikers"): iedereen die kan aanmelden,
 // met de rol, de klassen per schooljaar en de stand van het account. Enkel voor een beheerder.
 //
@@ -15,7 +15,7 @@ import * as data from "./data.js";
 import { ACCOUNTFUNCTIE, ACCOUNTFUNCTIE_VERSIE, SCHOOLDOMEIN } from "./config.js";
 import { bevries, datumEnUur, html, knopBezig, meld, venster, vraag, zet } from "./ui.js";
 
-export const VERSIE = "0.6.1";
+export const VERSIE = "0.6.2";
 
 // ---------- Zonder browser te testen ----------
 

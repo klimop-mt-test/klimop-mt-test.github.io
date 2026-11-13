@@ -1,4 +1,4 @@
-// MT · aanmelden.js · versie 0.6.1
+// MT · aanmelden.js · versie 0.6.2
 // Het aanmeldscherm (17.2, canvas: bord "Aanmelden met tweestapsverificatie"). De eerste keer vier
 // stappen: tijdelijk wachtwoord, eigen wachtwoord kiezen, app koppelen, code. Daarna twee: wachtwoord
 // en code. Welke stap volgt, beslist dit scherm niet zelf: het vraagt de stand van het account aan de
@@ -12,7 +12,7 @@ import * as data from "./data.js";
 import { ACCOUNTFUNCTIE, ACCOUNTFUNCTIE_VERSIE, MAILVOORBEELD } from "./config.js";
 import { html, zet } from "./ui.js";
 
-export const VERSIE = "0.6.1";
+export const VERSIE = "0.6.2";
 
 // ---------- Welke stap volgt ----------
 
