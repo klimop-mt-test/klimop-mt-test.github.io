@@ -434,7 +434,7 @@ Deno.test("uitstappen bijwerken: de pagina vraagt het, en geeft zelf niets door"
   let gezien = null;
   const r = await metFetch(async (url, opties) => {
     gezien = { url, opties };
-    return json(200, { ok: true, versie: "0.7.0", uitstappen: { nieuw: 2 } });
+    return json(200, { ok: true, versie: "0.7.1", uitstappen: { nieuw: 2 } });
   }, uitstappenBijwerken);
   assert.equal(r.ok, true);
   assert.equal(r.gegevens.uitstappen.nieuw, 2);

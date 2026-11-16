@@ -1,5 +1,5 @@
-// MT · rekenen.js · versie 0.7.0
-// Het rekencontract (mt-rekencontract.md, versie 18): hoe de MT rekent, tot op de cent. De nummers in
+// MT · rekenen.js · versie 0.7.1
+// Het rekencontract (mt-rekencontract.md, versie 19): hoe de MT rekent, tot op de cent. De nummers in
 // dit bestand, zoals 1.16 of G5e, verwijzen naar dat contract.
 //
 // Regel 1 (17.1): dit bestand importeert niets, en kent geen scherm, netwerk, browseropslag of klok.
@@ -18,14 +18,14 @@
 // een bedrag (1.8). De facturatie, de voorschotten en het rapport volgen in fase 2; minder scherp en
 // de credits van een meerdaagse in fase 3.
 
-export const VERSIE = "0.7.0";
+export const VERSIE = "0.7.1";
 
 /**
  * De rekenversie (17.1): gaat omhoog bij elke wijziging aan dit bestand of aan adapter.js die een
  * uitkomst kan wijzigen, en staat later in elke momentopname. Een test weigert een wijziging zonder
  * nieuwe rekenversie (tests/rekenversie_test.js).
  */
-export const REKENVERSIE = 1;
+export const REKENVERSIE = 2;
 
 // ---------- Exact rekenen met breuken ----------
 
@@ -204,8 +204,9 @@ const binnen = new WeakMap();
  * leerling volgt met bedrag(verdeling, profiel), de sommen met totalen(verdeling, groepen).
  *
  * Een tussenkomst verlaagt eerst haar eigen onderdeel, en maakt nooit een negatieve kost. Wat ze meer
- * is dan haar onderdeel, gaat als totaal naar het andere onderdeel (B102, B141); wat dan nog
- * overblijft, is de rest: dat lost de beheerder op.
+ * is dan haar onderdeel, gaat als totaal naar het andere onderdeel (B102, B141). Wat dat niet kan
+ * opnemen, keert terug naar het eigen onderdeel: een tussenkomst blijft nooit ongebruikt zolang er
+ * nog iets te betalen is (B219, B221). Wat dan nog overblijft, is de rest: dat lost de beheerder op.
  */
 export function verdeel({ activiteit = null, vervoer = null } = {}) {
   const invoer = { activiteit: leesOnderdeel(activiteit, "de activiteit"), vervoer: leesOnderdeel(vervoer, "het vervoer") };
@@ -221,30 +222,46 @@ export function verdeel({ activiteit = null, vervoer = null } = {}) {
     const eigen = kleinste(breuk(o.T), v.ruimte);
     stap[naam] = { ...v, o, eigen, naarAnder: plus(min(breuk(o.T), eigen), v.overschotPerKind) };
   }
-  let rest = NUL;
   const ander = { activiteit: "vervoer", vervoer: "activiteit" };
+  // Wat elk onderdeel van het overschot van het andere opneemt: zoveel als het zelf nog kost (B102).
+  const neemt = {};
+  for (const naam of ["activiteit", "vervoer"]) {
+    const s = stap[naam];
+    const van = stap[ander[naam]];
+    neemt[naam] = s && van ? kleinste(van.naarAnder, min(s.ruimte, s.eigen)) : NUL;
+  }
+  // Wat het andere onderdeel niet kon opnemen, keert terug naar het eigen onderdeel en verlaagt wat de
+  // leerlingen daar nog betalen (B219, B221). Pas wat dan nog overblijft, is de rest. Is de prijs van
+  // het andere onderdeel onbekend, dan wacht het overschot: het is geen rest, en er keert niets terug.
+  let rest = NUL;
+  const terug = {};
+  for (const naam of ["activiteit", "vervoer"]) {
+    const s = stap[naam];
+    terug[naam] = NUL;
+    if (!s) continue;
+    const doel = invoer[ander[naam]];
+    if (doel !== null && doel.onbekend) continue;
+    const over = min(s.naarAnder, neemt[ander[naam]]);
+    terug[naam] = kleinste(over, min(min(s.ruimte, s.eigen), neemt[naam]));
+    rest = plus(rest, min(over, terug[naam]));
+  }
   const intern = {};
   const zichtbaar = {};
   for (const naam of ["activiteit", "vervoer"]) {
     const o = invoer[naam];
     if (o === null) {
-      // Het onderdeel bestaat niet: wat het andere onderdeel hierheen stuurt, kan nergens van af.
       intern[naam] = { bestaat: false, onbekend: false, betaler: NUL, enkelGedeeld: NUL };
       zichtbaar[naam] = Object.freeze({ bestaat: false, bekend: true, kost: 0, tussenkomst: 0, aangerekend: 0, betalers: 0 });
-      if (stap[ander[naam]]) rest = plus(rest, stap[ander[naam]].naarAnder);
       continue;
     }
     if (o.onbekend) {
-      // Onbekend: geen bedrag, en wat hierheen komt, wacht tot de prijs gekend is.
+      // Onbekend: geen bedrag, en wat hierheen zou komen, wacht tot de prijs gekend is.
       intern[naam] = { bestaat: true, onbekend: true, betaler: NUL, enkelGedeeld: NUL };
       zichtbaar[naam] = Object.freeze({ bestaat: true, bekend: false, kost: null, tussenkomst: null, aangerekend: null, betalers: null });
       continue;
     }
     const s = stap[naam];
-    const binnenkomend = stap[ander[naam]] ? stap[ander[naam]].naarAnder : NUL;
-    const vanAnder = kleinste(binnenkomend, min(s.ruimte, s.eigen));
-    rest = plus(rest, min(binnenkomend, vanAnder));
-    const blijft = min(min(s.ruimte, s.eigen), vanAnder);
+    const blijft = min(min(min(s.ruimte, s.eigen), neemt[naam]), terug[naam]);
     // Elk bedrag van het onderdeel daalt in dezelfde verhouding (B91).
     const factor = isNul(s.ruimte) ? NUL : gedeeldDoor(blijft, s.ruimte);
     intern[naam] = { bestaat: true, onbekend: false, betaler: maal(s.betaler, factor), enkelGedeeld: maal(s.enkelGedeeld, factor), A: s.o.A, B: s.o.B, metPrijsPerKind: s.o.p > 0n };
@@ -252,8 +269,8 @@ export function verdeel({ activiteit = null, vervoer = null } = {}) {
       bestaat: true,
       bekend: true,
       kost: rond(s.kost),
-      // wat de tussenkomsten van dit onderdeel dragen, ook wat van het andere onderdeel overkwam
-      tussenkomst: rond(plus(plus(s.perKindGebruikt, s.eigen), vanAnder)),
+      // wat de tussenkomsten van dit onderdeel dragen: de eigen, wat van het andere onderdeel overkwam, en wat terugkeerde
+      tussenkomst: rond(plus(plus(plus(s.perKindGebruikt, s.eigen), neemt[naam]), terug[naam])),
       aangerekend: alsGetal(s.o.A),
       betalers: alsGetal(s.o.B),
     });
@@ -264,10 +281,16 @@ export function verdeel({ activiteit = null, vervoer = null } = {}) {
     vervoer: zichtbaar.vervoer,
     /** Beide onderdelen zijn gekend: er is een totaal per leerling. */
     volledig: !onbekend,
-    /** Wat een tussenkomst meer was dan haar onderdeel (B102, B141), en wat er na het andere onderdeel nog overblijft. */
+    /**
+     * Wat een tussenkomst meer was dan haar onderdeel (B102, B141): hoeveel er van elk onderdeel naar het
+     * andere vertrok, hoeveel daarvan terugkeerde omdat het andere het niet kon opnemen (B221), en wat er
+     * dan nog overblijft.
+     */
     overschot: Object.freeze({
       vanActiviteit: stap.activiteit ? rond(stap.activiteit.naarAnder) : 0,
       vanVervoer: stap.vervoer ? rond(stap.vervoer.naarAnder) : 0,
+      terugActiviteit: rond(terug.activiteit),
+      terugVervoer: rond(terug.vervoer),
       // Zolang een onderdeel onbekend is, staat niet vast wat er overblijft.
       rest: onbekend ? null : rond(rest),
     }),

@@ -1,5 +1,5 @@
 // MT · tests/rekenen_test.js
-// Het rekencontract (mt-rekencontract.md, versie 18) als automatische test (17.1, 17.12, T10):
+// Het rekencontract (mt-rekencontract.md, versie 19) als automatische test (17.1, 17.12, T10):
 //   - de testgevallen van fase 1, uit dezelfde lijst als de testpagina (code/rekentest.js);
 //   - de afronding van B97, ook bij een credit en bij grote bedragen;
 //   - G21, de controle over alle gevallen, met willekeurige bedragen en aantallen: elk bedrag wijkt
@@ -127,14 +127,14 @@ Deno.test("een tussenkomst die naar een onbekend onderdeel zou gaan, verdwijnt n
 Deno.test("een overschot zonder ander onderdeel is de rest: dat lost de beheerder op (B102)", () => {
   const v = verdeel({ activiteit: { gedeeld: 10000, aangerekend: 10, tussenkomstTotaal: 12500 } });
   assert.deepEqual(bedrag(v, AANWEZIG), { activiteit: 0, vervoer: 0, totaal: 0 });
-  assert.deepEqual(v.overschot, { vanActiviteit: 2500, vanVervoer: 0, rest: 2500 });
+  assert.deepEqual(v.overschot, { vanActiviteit: 2500, vanVervoer: 0, terugActiviteit: 0, terugVervoer: 0, rest: 2500 });
   // Beide onderdelen volledig gedekt: wat samen overblijft, is de rest.
   const beide = verdeel({ activiteit: { gedeeld: 10000, aangerekend: 10, tussenkomstTotaal: 12500 }, vervoer: { gedeeld: 4000, aangerekend: 10, tussenkomstTotaal: 4100 } });
-  assert.deepEqual(beide.overschot, { vanActiviteit: 2500, vanVervoer: 100, rest: 2600 });
+  assert.deepEqual(beide.overschot, { vanActiviteit: 2500, vanVervoer: 100, terugActiviteit: 0, terugVervoer: 0, rest: 2600 });
   // Het overschot dekt het andere onderdeel maar deels: de rest is wat daarna overblijft.
   const deels = verdeel({ activiteit: { gedeeld: 10000, aangerekend: 10, tussenkomstTotaal: 16000 }, vervoer: { gedeeld: 4000, aangerekend: 10 } });
   assert.deepEqual(bedrag(deels, AANWEZIG), { activiteit: 0, vervoer: 0, totaal: 0 });
-  assert.deepEqual(deels.overschot, { vanActiviteit: 6000, vanVervoer: 0, rest: 2000 });
+  assert.deepEqual(deels.overschot, { vanActiviteit: 6000, vanVervoer: 0, terugActiviteit: 0, terugVervoer: 0, rest: 2000 });
   assert.equal(deels.vervoer.tussenkomst, 4000);
 });
 
@@ -147,11 +147,49 @@ Deno.test("een tussenkomst per kind verlaagt enkel wie de prijs per kind betaalt
   assert.equal(bedrag(zonder, AANWEZIG).totaal, 150);
   assert.equal(bedrag(zonder, ENKEL_GEDEELD).totaal, 150);
   assert.equal(zonder.activiteit.tussenkomst, 500);
-  // Per kind meer dan het hele deel van een betaler: het bedrag wordt nooit negatief, de rest is overschot (B141).
+  // Per kind meer dan het hele deel van een betaler: zijn bedrag wordt nooit negatief (B141). Wat overblijft,
+  // 4 × (5,00 − 4,00), kan nergens anders heen en keert terug: de zes anderen betalen samen 6,00 − 4,00 (B221).
   const veel = verdeel({ activiteit: { perKind: 300, gedeeld: 1000, aangerekend: 10, betalers: 4, tussenkomstPerKind: 500 } });
   assert.equal(bedrag(veel, AANWEZIG).totaal, 0);
-  assert.equal(bedrag(veel, ENKEL_GEDEELD).totaal, 100);
-  assert.deepEqual(veel.overschot, { vanActiviteit: 400, vanVervoer: 0, rest: 400 });  // 4 × (5,00 − 4,00)
+  assert.equal(bedrag(veel, ENKEL_GEDEELD).totaal, 33);  // 2,00 / 6 = 0,333…
+  assert.deepEqual(veel.overschot, { vanActiviteit: 400, vanVervoer: 0, terugActiviteit: 400, terugVervoer: 0, rest: 0 });
+  assert.equal(veel.activiteit.tussenkomst, 2000);  // 4 × 4,00 per kind en 4,00 terug: 20,00 van de 22,00 die de activiteit kost
+});
+
+Deno.test("een tussenkomst blijft nooit ongebruikt zolang er nog iets te betalen is (B219, B221)", () => {
+  // Toegang 6,00 en een gids van 50,00; 20 aangerekend, van wie 10 mee; 10,00 per kind dat mee was (G5g).
+  const act = { gedeeld: 5000, perKind: 600, tussenkomstPerKind: 1000, aangerekend: 20, betalers: 10 };
+  const zonder = verdeel({ activiteit: act });
+  assert.deepEqual(bedrag(zonder, AANWEZIG), { activiteit: 0, vervoer: 0, totaal: 0 });
+  assert.deepEqual(bedrag(zonder, ENKEL_GEDEELD), { activiteit: 100, vervoer: 0, totaal: 100 });
+  assert.deepEqual(zonder.overschot, { vanActiviteit: 1500, vanVervoer: 0, terugActiviteit: 1500, terugVervoer: 0, rest: 0 });
+  // Eerst het andere onderdeel (B102), dan pas terug: een bus van 10,00 neemt 10,00 op, 5,00 keert terug.
+  const kleineBus = verdeel({ activiteit: act, vervoer: { gedeeld: 1000, aangerekend: 20 } });
+  assert.deepEqual(bedrag(kleineBus, AANWEZIG), { activiteit: 0, vervoer: 0, totaal: 0 });
+  assert.deepEqual(bedrag(kleineBus, ENKEL_GEDEELD), { activiteit: 200, vervoer: 0, totaal: 200 });
+  assert.deepEqual(kleineBus.overschot, { vanActiviteit: 1500, vanVervoer: 0, terugActiviteit: 500, terugVervoer: 0, rest: 0 });
+  assert.equal(kleineBus.vervoer.tussenkomst, 1000);
+  assert.equal(kleineBus.activiteit.tussenkomst, 9000);  // 10 × 8,50 per kind en 5,00 terug
+  // Kan het andere onderdeel alles opnemen, dan keert er niets terug.
+  const groteBus = verdeel({ activiteit: act, vervoer: { gedeeld: 30000, aangerekend: 20 } });
+  assert.deepEqual(bedrag(groteBus, AANWEZIG), { activiteit: 0, vervoer: 1425, totaal: 1425 });
+  assert.deepEqual(bedrag(groteBus, ENKEL_GEDEELD), { activiteit: 250, vervoer: 1425, totaal: 1675 });
+  assert.deepEqual(groteBus.overschot, { vanActiviteit: 1500, vanVervoer: 0, terugActiviteit: 0, terugVervoer: 0, rest: 0 });
+  // Een rest is er enkel nog als de tussenkomsten samen groter zijn dan de totale kost.
+  const iedereenMee = verdeel({ activiteit: { ...act, betalers: 20 } });
+  assert.deepEqual(iedereenMee.overschot, { vanActiviteit: 3000, vanVervoer: 0, terugActiviteit: 0, terugVervoer: 0, rest: 3000 });
+  // Andersom: het vervoer heeft de prijs per kind. De activiteit neemt 10,00 op, 5,00 keert terug naar het vervoer.
+  const andersom = verdeel({ activiteit: { gedeeld: 1000, aangerekend: 20 }, vervoer: act });
+  assert.deepEqual(andersom.overschot, { vanActiviteit: 0, vanVervoer: 1500, terugActiviteit: 0, terugVervoer: 500, rest: 0 });
+  assert.deepEqual(bedrag(andersom, ENKEL_GEDEELD), { activiteit: 0, vervoer: 200, totaal: 200 });
+  // Ook naast een tussenkomst als totaal: 10,00 als totaal, dan nog 15,00 terug; de tien anderen betalen samen niets meer.
+  const metTotaal = verdeel({ activiteit: { ...act, tussenkomstTotaal: 1000 } });
+  assert.deepEqual(bedrag(metTotaal, ENKEL_GEDEELD), { activiteit: 0, vervoer: 0, totaal: 0 });
+  assert.deepEqual(metTotaal.overschot, { vanActiviteit: 1500, vanVervoer: 0, terugActiviteit: 1500, terugVervoer: 0, rest: 0 });
+  // Is de prijs van het andere onderdeel onbekend, dan wacht het overschot: geen rest, en er keert niets terug.
+  const wacht = verdeel({ activiteit: act, vervoer: { onbekend: true } });
+  assert.deepEqual(wacht.overschot, { vanActiviteit: 1500, vanVervoer: 0, terugActiviteit: 0, terugVervoer: 0, rest: null });
+  assert.deepEqual(bedrag(wacht, ENKEL_GEDEELD), { activiteit: 250, vervoer: null, totaal: null });
 });
 
 Deno.test("de school draagt: eerst gewoon berekend, dan voor de ouders op € 0, met één afronding op wat de ouders betalen", () => {
@@ -188,7 +226,7 @@ Deno.test("een verdeling is gewone, vaste gegevens: te bewaren als JSON, niet te
     activiteit: { bestaat: true, bekend: true, kost: 1000, tussenkomst: 100, aangerekend: 3, betalers: 0 },
     vervoer: { bestaat: true, bekend: true, kost: 500, tussenkomst: 0, aangerekend: 3, betalers: 0 },
     volledig: true,
-    overschot: { vanActiviteit: 0, vanVervoer: 0, rest: 0 },
+    overschot: { vanActiviteit: 0, vanVervoer: 0, terugActiviteit: 0, terugVervoer: 0, rest: 0 },
   });
 });
 
@@ -212,33 +250,49 @@ const kleinsteVan = (a, b) => (b.kleinerDan(a) ? b : a);
 const nooitNegatief = (a) => (a.kleinerDan(B(0)) ? B(0) : a);
 
 /**
- * Het exacte deel van elke leerling, volgens 1.16, leerling per leerling. leerlingen: [{ a, p }] per
- * onderdeel: aangerekend en betaalt de prijs per kind. Geeft per onderdeel de exacte delen en het overschot.
+ * Eén onderdeel op zich, volgens 1.16, leerling per leerling. leerlingen: [{ a, p }]: aangerekend, en
+ * betaalt de prijs per kind. Geeft wat elke leerling exact betaalt na de tussenkomst per kind (e), de som
+ * daarvan (K), wat er na de eigen tussenkomst als totaal nog te betalen is (R), en het overschot (O).
  */
-function exactOnderdeel(o, leerlingen, binnenkomend) {
+function onderdeelAlleen(o, leerlingen) {
   const A = leerlingen.filter((l) => l.a).length;
   const kost = B(o.G).plus(B(o.p * leerlingen.filter((l) => l.p).length));
   let e = leerlingen.map((l) => (l.a ? B(l.p ? o.p : 0).plus(B(o.G).door(B(A))) : B(0)));
-  let overschot = B(0);
+  let O = B(0);
   if (o.t > 0 && A > 0) {
     e = e.map((deel, i) => {
       const krijgt = o.p > 0 ? leerlingen[i].p : leerlingen[i].a;
       if (!krijgt) return deel;
-      overschot = overschot.plus(nooitNegatief(B(o.t).min(deel)));
+      O = O.plus(nooitNegatief(B(o.t).min(deel)));
       return nooitNegatief(deel.min(B(o.t)));
     });
   }
   const K = A > 0 ? e.reduce((som, deel) => som.plus(deel), B(0)) : kost;
   const eigen = kleinsteVan(B(o.T), K);
-  overschot = overschot.plus(B(o.T).min(eigen));
-  const vanAnder = binnenkomend === null ? B(0) : kleinsteVan(binnenkomend, K.min(eigen));
-  const factor = K.nul ? B(0) : K.min(eigen).min(vanAnder).door(K);
-  return { delen: e.map((deel) => deel.maal(factor)), overschot, K, eigen, vanAnder };
+  return { e, K, R: K.min(eigen), O: O.plus(B(o.T).min(eigen)) };
+}
+
+/**
+ * Beide onderdelen samen: het overschot gaat eerst naar het andere onderdeel (B102); wat dat niet kan
+ * opnemen, keert terug naar het eigen onderdeel (B221); wat dan nog overblijft, is de rest.
+ */
+function exactSamen(x, y) {
+  const binnenX = kleinsteVan(y.O, x.R);
+  const binnenY = kleinsteVan(x.O, y.R);
+  const terugX = kleinsteVan(x.O.min(binnenY), x.R.min(binnenX));
+  const terugY = kleinsteVan(y.O.min(binnenX), y.R.min(binnenY));
+  const maak = (z, binnen, terug) => {
+    const blijft = z.R.min(binnen).min(terug);
+    return { delen: z.e.map((deel) => (z.K.nul ? B(0) : deel.maal(blijft.door(z.K)))), blijft };
+  };
+  return { x: maak(x, binnenX, terugX), y: maak(y, binnenY, terugY), rest: x.O.min(binnenY).min(terugX).plus(y.O.min(binnenX).min(terugY)) };
 }
 
 Deno.test("G21: elk bedrag wijkt hoogstens een halve cent af van het exacte deel, en het vervoer is nooit negatief", () => {
   const kies = reeks(20261116);
   const bedragOfNul = (max) => (kies(4) === 0 ? 0 : kies(max) + 1);
+  let metTerug = 0;
+  let metRest = 0;
   for (let ronde = 0; ronde < 4000; ronde++) {
     const n = kies(60) + 1;
     // Per leerling en per onderdeel: aangerekend, en betaalt hij de prijs per kind?
@@ -249,9 +303,14 @@ Deno.test("G21: elk bedrag wijkt hoogstens een halve cent af van het exacte deel
       const andersVoorVervoer = kies(12) === 0;
       return { activiteit: { a, p }, vervoer: andersVoorVervoer ? { a: !a, p: false } : { a, p: a && kies(3) > 0 } };
     });
+    // Eén ronde op vijf met kleine bedragen en vaak een tussenkomst per kind: dan is die geregeld groter dan
+    // wat een kind betaalt, en kan het andere onderdeel het overschot niet altijd opnemen (B221).
+    const klein = kies(5) === 0;
     const onderdeel = (naam) => {
       const metPrijsPerKind = kies(2) === 0;
-      const o = { G: bedragOfNul(250000), p: metPrijsPerKind ? kies(4000) + 1 : 0, T: kies(3) === 0 ? kies(300000) : 0, t: kies(5) === 0 ? kies(1500) + 1 : 0 };
+      const o = klein
+        ? { G: bedragOfNul(3000), p: metPrijsPerKind ? kies(800) + 1 : 0, T: kies(4) === 0 ? kies(3000) : 0, t: kies(2) === 0 ? kies(2000) + 1 : 0 }
+        : { G: bedragOfNul(250000), p: metPrijsPerKind ? kies(4000) + 1 : 0, T: kies(3) === 0 ? kies(300000) : 0, t: kies(5) === 0 ? kies(1500) + 1 : 0 };
       const lln = leerlingen.map((l) => ({ a: l[naam].a, p: l[naam].a && metPrijsPerKind && l[naam].p }));
       return { o, lln };
     };
@@ -263,11 +322,10 @@ Deno.test("G21: elk bedrag wijkt hoogstens een halve cent af van het exacte deel
     });
     const v = verdeel({ activiteit: invoer(act), vervoer: invoer(verv) });
 
-    // Het exacte deel, los van rekenen.js: eerst elk onderdeel op zich, dan met het overschot van het andere.
-    const actAlleen = exactOnderdeel(act.o, act.lln, null);
-    const vervAlleen = exactOnderdeel(verv.o, verv.lln, null);
-    const exactAct = exactOnderdeel(act.o, act.lln, vervAlleen.overschot);
-    const exactVerv = exactOnderdeel(verv.o, verv.lln, actAlleen.overschot);
+    // Het exacte deel, los van rekenen.js: eerst elk onderdeel op zich, dan beide samen.
+    const exact = exactSamen(onderdeelAlleen(act.o, act.lln), onderdeelAlleen(verv.o, verv.lln));
+    const exactAct = exact.x;
+    const exactVerv = exact.y;
 
     const waar = "ronde " + ronde + ": " + JSON.stringify({ activiteit: invoer(act), vervoer: invoer(verv) });
     let somExact = B(0);
@@ -291,10 +349,23 @@ Deno.test("G21: elk bedrag wijkt hoogstens een halve cent af van het exacte deel
     if (samen < 0n) samen = -samen;
     assert.ok(samen <= BigInt(n) * (somExact.n < 0n ? -somExact.n : somExact.n), waar + ": de som wijkt te veel af");
     // Wat exact te betalen is, is de kost na de tussenkomsten: er verdwijnt niets en er komt niets bij.
-    const kostNa = (x, exact) => (x.lln.some((l) => l.a) ? exact.K.min(exact.eigen).min(exact.vanAnder) : B(0));
+    const kostNa = (x, deel) => (x.lln.some((l) => l.a) ? deel.blijft : B(0));
     const verwacht = kostNa(act, exactAct).plus(kostNa(verv, exactVerv));
     assert.ok(somExact.min(verwacht).nul, waar + ": de exacte delen tellen niet op tot de kost na de tussenkomsten");
+    // Een tussenkomst blijft nooit ongebruikt zolang er nog iets te betalen is (B219, B221): blijft er
+    // een rest, dan kost geen enkel onderdeel nog iets, en betaalt geen enkele leerling nog iets.
+    if (!exact.rest.nul) {
+      assert.ok(exactAct.blijft.nul && exactVerv.blijft.nul && somExact.nul && somOuders === 0n, waar + ": er blijft een rest terwijl er nog iets te betalen is");
+    }
+    // De rest die rekenen.js meldt, is die rest, afgerond op de cent.
+    let restVerschil = 2n * (BigInt(v.overschot.rest) * exact.rest.n - exact.rest.t);
+    if (restVerschil < 0n) restVerschil = -restVerschil;
+    assert.ok(restVerschil <= (exact.rest.n < 0n ? -exact.rest.n : exact.rest.n), waar + ": de rest is " + v.overschot.rest + ", exact " + exact.rest.t + "/" + exact.rest.n);
+    if (v.overschot.terugActiviteit + v.overschot.terugVervoer > 0) metTerug++;
+    if (v.overschot.rest > 0) metRest++;
   }
+  // De willekeurige gevallen raken ook echt wat ze moeten nakijken: een overschot dat terugkeert, en een rest.
+  assert.ok(metTerug >= 40 && metRest >= 40, "te weinig gevallen met een overschot dat terugkeert (" + metTerug + ") of met een rest (" + metRest + ")");
 });
 
 Deno.test("G21: de sommen van een activiteit kloppen met de kost, de tussenkomsten en de bedragen per leerling", () => {

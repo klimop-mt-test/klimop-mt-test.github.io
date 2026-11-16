@@ -12,7 +12,7 @@ Testversie van de MT, de maximumfactuur-tool van GO! basisschool Klim-Op. Enkel 
 | `opmaak/` | de huisstijl (`mt.css`), het logo, en het lettertype Outfit met zijn licentie |
 | `sql/` | de scripts voor Supabase, op volgorde: elk script voer je één keer uit in de SQL Editor, het volgende pas na het vorige |
 | `tests/` | de automatische tests; `tests/databank/` bootst Supabase na en bevat de proef op de databank en de lijst van bewust ingebouwde fouten, met enkel verzonnen gegevens. De databanktest speelt ook een wedloop na, twee verbindingen tegelijk, en stuurt wat de echte `adapter.js` klaarzet door de echte databankfunctie |
-| `.github/` | de tests en de keep-alive in GitHub Actions |
+| `.github/` | de tests, de keep-alive en de wekelijkse vergelijking met de uitstappentool, in GitHub Actions. Namen met een punt gaan niet mee met een upload: je maakt of wijzigt ze met de hand |
 
 ## Eén vaste regel voor deze organisatie
 

@@ -1,4 +1,4 @@
-// MT · adapter.js · versie 0.7.0
+// MT · adapter.js · versie 0.7.1
 // De uitstappentool lezen (hoofdstuk 4 en 17.1 van de huidige stand; T1, V20, V22, B212).
 //
 // Regel 2 (17.1): dit bestand leest de uitstappentool enkel over het netwerk, met de functie die het
@@ -21,7 +21,7 @@
 // Wat een uitstap kost, vertaalt kostenVoorMT() naar het rekencontract (1.3): een gedeelde kost, een
 // prijs per kind, of onbekend. Een prijs die ontbreekt, is nooit € 0 (B80).
 
-export const VERSIE = "0.7.0";
+export const VERSIE = "0.7.1";
 
 // ==== adapter: gedeeld met de serverfunctie ====
 
@@ -30,7 +30,7 @@ export const VERSIE = "0.7.0";
  * wijziging aan rekenen.js of aan dit bestand die een uitkomst kan wijzigen. De serverfunctie meldt
  * haar rekenversie aan de pagina: verschilt ze, dan staat in Supabase een oudere serverfunctie.
  */
-export const REKENVERSIE = 1;
+export const REKENVERSIE = 2;
 
 /** De ruwe schemaversies van de uitstappentool die de MT begrijpt (T1). Zonder versie: van vóór de versies. */
 export const BEKENDE_VERSIES = Object.freeze([1, 2]);

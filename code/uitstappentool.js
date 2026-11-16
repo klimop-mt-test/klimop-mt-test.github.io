@@ -1,4 +1,4 @@
-// MT · uitstappentool.js · versie 0.7.0
+// MT · uitstappentool.js · versie 0.7.1
 // Wat de MT uit de uitstappentool leest, op de startpagina van de testversie (stap 3; hoofdstuk 4, B212).
 //
 // Bij het openen gebeurt twee keer hetzelfde lezen, met dezelfde code (adapter.js):
@@ -19,7 +19,7 @@ import * as data from "./data.js";
 import { REKENVERSIE } from "./rekenen.js";
 import { datumEnUur, html, zet } from "./ui.js";
 
-export const VERSIE = "0.7.0";
+export const VERSIE = "0.7.1";
 
 /** Na zoveel minuten leest de MT opnieuw als je naar het tabblad terugkeert. */
 const OPNIEUW_NA_MINUTEN = 10;

@@ -1,4 +1,4 @@
-// MT · config.js · versie 0.7.0
+// MT · config.js · versie 0.7.1
 // De adressen en sleutels per omgeving (17.1). De omgeving, test of productie, volgt uit het adres
 // van de pagina; een onbekend adres start niet.
 //
@@ -6,7 +6,7 @@
 // apikey mee (design system 1.13). Nooit een secret key (sb_secret_…) of een oude sleutel (eyJ…)
 // in dit bestand of elders in de repository: een test bewaakt dat.
 
-export const VERSIE = "0.7.0";
+export const VERSIE = "0.7.1";
 
 /** De MT per adres van de pagina. De productie komt erbij bij de livegang. */
 const OMGEVINGEN = Object.freeze({
@@ -45,7 +45,7 @@ export const ACCOUNTFUNCTIE_VERSIE = "0.6.0";
 export const UITSTAPFUNCTIE = "mt-uitstappen";
 
 /** De versie van die serverfunctie die deze versie van de MT verwacht, zoals bij de accounts. */
-export const UITSTAPFUNCTIE_VERSIE = "0.7.0";
+export const UITSTAPFUNCTIE_VERSIE = "0.7.1";
 
 /** Het domein van de e-mailadressen van de school. Een ander adres mag, maar de MT vraagt het eerst na. */
 export const SCHOOLDOMEIN = "klimopvilvoorde.be";

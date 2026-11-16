@@ -17,6 +17,8 @@ import { afdruk, CODE, lees } from "./hulp.js";
 
 const AFDRUKKEN = {
   1: "eeaa21e2e011979e6e0777a0dad43d7104fea79e99e09c4b24ffc1116ed5719a",
+  // 2: wat het andere onderdeel niet kan opnemen, keert terug naar het eigen onderdeel (B219, B221; rekencontract versie 19).
+  2: "2119e5228f35b87d655f30e8149572851d460c26f7b759e2e128e8c16366f5a6",
 };
 
 /** Een bestand zonder zijn eerste regel (de naam en de versie van de levering) en zonder de regel met VERSIE. */

@@ -1,4 +1,4 @@
-// MT · functies/mt-uitstappen/index.ts · versie 0.7.0
+// MT · functies/mt-uitstappen/index.ts · versie 0.7.1
 // De serverfunctie voor de uitstappen (17.4, B212): een Edge Function in het Supabase-project van de MT.
 //
 // Waarom ze bestaat. De MT moet weten welke uitstappen er zijn, met hun datum, hun klassen en hun stand
@@ -37,7 +37,7 @@
 // rest gewone JavaScript. Wat de functie doet, bewaken de tests (tests/uitstapfunctie_test.js).
 // @ts-nocheck
 
-export const VERSIE = "0.7.0";
+export const VERSIE = "0.7.1";
 
 /**
  * De pagina van de MT per project van Supabase. Enkel dat adres mag deze functie vanuit een browser
@@ -62,7 +62,7 @@ export const UITSTAPPENTOOL = Object.freeze({
  * wijziging aan rekenen.js of aan dit bestand die een uitkomst kan wijzigen. De serverfunctie meldt
  * haar rekenversie aan de pagina: verschilt ze, dan staat in Supabase een oudere serverfunctie.
  */
-const REKENVERSIE = 1;
+const REKENVERSIE = 2;
 
 /** De ruwe schemaversies van de uitstappentool die de MT begrijpt (T1). Zonder versie: van vóór de versies. */
 const BEKENDE_VERSIES = Object.freeze([1, 2]);

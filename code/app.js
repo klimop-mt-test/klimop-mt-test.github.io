@@ -1,4 +1,4 @@
-// MT · app.js · versie 0.7.0
+// MT · app.js · versie 0.7.1
 // De start (17.1): nooit in een andere pagina, dezelfde versie in alle bestanden, de omgeving uit
 // het adres, de verbinding met de databank, en sinds stap 2 de aanmelding, het afmelden (17.2) en
 // de weg naar het scherm Gebruikers. Sinds stap 3 ook het lezen van de uitstappentool bij het openen
@@ -9,7 +9,7 @@
 // die tot tien minuten toe), dan haalt de MT de bestanden één keer vers op en herlaadt. Lukt dat
 // niet, dan start ze niet en zegt ze wat je kan doen.
 
-export const VERSIE = "0.7.0";
+export const VERSIE = "0.7.1";
 
 /** De bestanden die de MT laadt. Elk heeft export const VERSIE; een test bewaakt deze lijst. */
 const MODULES = ["./config.js", "./ui.js", "./data.js", "./auth.js", "./aanmelden.js", "./gebruikers.js", "./rekenen.js", "./adapter.js", "./rekentest.js", "./uitstappentool.js"];
