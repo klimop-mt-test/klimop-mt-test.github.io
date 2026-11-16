@@ -1,0 +1,50 @@
+# MT · de vergelijking met de echte uitstappentool (T1, B220)
+# De MT neemt norm(), kosten() en hun hulp woord voor woord over uit de uitstappentool
+# (code/adapter.js). Elke maandagochtend haalt deze workflow het echte uitstappen.html op en gaat
+# hij na of die functies daar nog precies zo staan. Wijzigt de uitstappentool er iets aan zonder dat
+# de MT volgt, dan staat hier een kruisje en krijg je een mail van GitHub.
+# Deze workflow staat los van de tests bij een upload: hij houdt niets tegen.
+# Het opgehaalde bestand wordt enkel als tekst gelezen; er wordt niets van uitgevoerd.
+# GitHub kan een geplande workflow uitschakelen na 60 dagen zonder upload: zet hem dan opnieuw aan
+# onder Actions. Met de hand starten kan altijd: Actions → Uitstappentool → Run workflow.
+
+name: Uitstappentool
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vergelijking:
+    name: Vergelijking met uitstappen.html
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: De code ophalen
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Deno klaarzetten
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.9.6
+      - name: Het echte uitstappen.html ophalen
+        shell: bash
+        run: >-
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https'
+          --max-time 60 --max-filesize 5000000
+          --output "$RUNNER_TEMP/uitstappen.html"
+          https://klim-op.github.io/klimop-software/uitstappen.html
+      - name: Vergelijken met code/adapter.js
+        shell: bash
+        env:
+          MT_UITSTAPPEN_HTML: ${{ runner.temp }}/uitstappen.html
+          NO_COLOR: "1"
+        run: |
+          deno test --allow-read --allow-env=MT_UITSTAPPEN_HTML --no-prompt --filter "T1" tests/adapter_test.js 2>&1 | tee "$RUNNER_TEMP/uitkomst.txt"
+          # De vergelijking moet echt gelopen hebben: een overgeslagen test is geen groen vinkje.
+          grep -q "T1: de vergelijking met de uitstappentool.* ok" "$RUNNER_TEMP/uitkomst.txt"
