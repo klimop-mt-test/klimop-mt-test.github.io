@@ -178,6 +178,12 @@ export const FOUTEN = [
   },
   {
     script: "005_review1.sql",
+    naam: "de klassen van een ongewijzigde uitstap niet meer nakijken: \"klas onbekend\" herstelt zich dan niet",
+    oud: "    from public.klaslijsten l where l.activiteit_id = v_act.id;\n  v_onbekend := mt_intern.lijsten_bijwerken(v_act.id, v_namen, v_stempel);",
+    nieuw: "    from public.klaslijsten l where l.activiteit_id = v_act.id;\n  if v_gewijzigd > v_act.bron_gewijzigd_op then v_onbekend := mt_intern.lijsten_bijwerken(v_act.id, v_namen, v_stempel); end if;",
+  },
+  {
+    script: "005_review1.sql",
     naam: "een datum na een bevestiging stil overnemen",
     oud: "    if mt_intern.ligt_vast(v_act.id) then\n      v_wacht := true;\n    elsif v_jaar <> v_act.schooljaar then",
     nieuw: "    if v_jaar <> v_act.schooljaar then",
@@ -1027,6 +1033,18 @@ for (const tabel of LEZEN_002.beheer) ruimer(tabel, "('" + tabel + "', beheer)",
 for (const tabel of LEZEN_002.beheerOfEigen) ruimer(tabel, "('" + tabel + "', beheer || ", "('" + tabel + "', alles || ", "een lezer");
 for (const tabel of LEZEN_002.allesOf) ruimer(tabel, "('" + tabel + "', alles || ", "('" + tabel + "', ieder || ' or ' || alles || ", "elke leerkracht");
 ruimer("gebruiker_voorkeuren", "('gebruiker_voorkeuren', 'gebruiker_id = (select auth.uid())')", "('gebruiker_voorkeuren', beheer || ' or gebruiker_id = (select auth.uid())')", "de beheerder");
+
+// "Vandaag in haar klas" wordt "ooit in haar klas" (T6; de variant van Opus 5.5, 69.11).
+const LIJST = "alles || ' or ' || lijst || ' or leerling_id = any ' || ";
+const BEVESTIGING = "alles || ' or mt_intern.mt_mag_bevestiging(bevestiging_id) or leerling_id = any ' || ";
+for (const [tabel, regel] of [
+  ["klasindelingen", "alles || ' or klas_id = any ' || mijn_klassen || ' or leerling_id = any ' || "],
+  ["afwezigheden", LIJST], ["deelname", LIJST], ["opmerkingen", LIJST], ["deelnemers", LIJST], ["wijzigingen", LIJST],
+  ["bevestiging_leerlingen", BEVESTIGING], ["bevestiging_dagen", BEVESTIGING],
+  ["correctie_leerlingen", "alles || ' or leerling_id = any ' || "],
+]) {
+  FOUTEN.push({ script: "002_databank.sql", naam: "de leesregel van " + tabel + ": ook van wie ooit in haar klas zat", oud: "('" + tabel + "', " + regel + "nu)", nieuw: "('" + tabel + "', " + regel + "mijn_leerlingen)" });
+}
 
 // Rechtstreeks schrijven: waar een beheerder niet alles mag, komt er een handeling bij.
 for (const [tabel, mag] of [["instellingen", "u"], ["klassen", "iu"], ["leerlingen", "iu"], ["lopende_activiteit_klassen", "id"], ["activiteiten", "u"], ["deelnemers", "id"],

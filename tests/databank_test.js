@@ -7,7 +7,9 @@
 //   3. het laatste script nog eens: herhaalbaar, met dezelfde uitkomst;
 //   4. elk ouder script nog eens: dat moet geweigerd worden, want het zou rechten terugzetten;
 //   5. tests/databank/proef.sql, in UTC en in de tijd van Brussel;
-//   6. de wedloop: twee verbindingen tegelijk, voor wat één verbinding niet kan tonen (review 1).
+//   6. de wedloop: twee verbindingen tegelijk, voor wat één verbinding niet kan tonen (review 1);
+//   7. de adapter en de databank samen: wat de echte adapter (code/adapter.js) uit rijen van de
+//      uitstappentool maakt, verwerkt de echte databankfunctie, in delen zoals de serverfunctie (B212).
 //
 // Daarna, in een tweede test: de bewust ingebouwde fouten van tests/databank/fouten.js. Een controle
 // bewijst pas iets als ze ook afgaat wanneer het misloopt. Elke fout wordt apart in haar SQL-script
@@ -20,6 +22,7 @@
 // MT_PG_BIN wijst naar de map met initdb, pg_ctl en psql; anders zoekt de test in /usr/lib/postgresql.
 
 import assert from "node:assert/strict";
+import { bericht } from "../code/adapter.js";
 import { FOUTEN } from "./databank/fouten.js";
 import { lees, MAP, sqlScripts } from "./hulp.js";
 
@@ -118,6 +121,93 @@ async function wedloop(voer) {
   return null;
 }
 
+/**
+ * De adapter en de databank passen op elkaar (stap 3, B212). De serverfunctie mt-uitstappen geeft door
+ * wat adapter.js klaarzet; hier gaat precies dat bericht, van de echte adapter, naar de echte
+ * databankfunctie, als de rol van de serverfunctie en in delen zoals zij het doet.
+ * voer(gebruiker, sql) voert SQL uit op de databank. Geeft null als alles klopt, anders wat misliep.
+ */
+async function adapterEnDatabank(voer) {
+  const rij = (id, trip, gewijzigd = "2026-11-10T08:00:00.123456+00:00") => ({ id, updated_at: gewijzigd, trip });
+  const b = bericht([
+    rij("u-dag", { v: 2, datumStart: "2026-11-20", klassen: ["4A", "4B"], planStatus: "bevestigd", activiteit: "Uitstap" }),
+    rij("u-gwp", { v: 2, type: "meerdaags", datumStart: "2026-09-23", datumEind: "2026-09-25", klassen: ["6A"], planStatus: "bevestigd" }),
+    rij("u-aanvraag", { datumStart: "2026-12-03", klassen: ["1KA"], planStatus: "aangevraagd" }),
+    rij("u-geannuleerd", { v: 1, datumStart: "2026-12-04", klassen: ["2A"], planStatus: "geannuleerd", annulering: { metKosten: "wel", kosten: 20 } }),
+    rij("u-nascholing", { v: 2, categorie: "nascholing", datumStart: "2026-12-05", klassen: ["4A"], planStatus: "bevestigd" }),
+    rij("u-prullenbak", { v: 2, datumStart: "2026-12-06", klassen: ["4A"], planStatus: "bevestigd", verwijderdOp: "2026-11-01T10:00:00.000Z" }),
+    rij("u-geen-datum", { v: 2, datumStart: "2026-02-30", klassen: ["4A"], planStatus: "bevestigd" }),
+    rij("u-onbekende-klas", { v: 2, datumStart: "2026-12-08", klassen: ["4A", "Zonneklas", "", null], planStatus: "bevestigd" }),
+    rij("u-vorig-jaar", { v: 2, datumStart: "2026-03-10", klassen: ["3A"], planStatus: "bevestigd" }),
+    rij("u-ver-weg", { v: 2, datumStart: "2031-03-10", klassen: ["3A"], planStatus: "bevestigd" }),
+    rij("u-nieuw-schema", { v: 3, datumStart: "2026-12-09", klassen: ["4A"], planStatus: "bevestigd" }),
+    rij("u-geen-lijst", { v: 2, datumStart: "2026-12-10", klassen: "4A", planStatus: "iets" }),
+  ]);
+  const tekst = (waarde) => "'" + String(waarde).replace(/'/g, "''") + "'";
+  const opzet = await voer("supabase_admin", `
+    insert into public.schooljaren (schooljaar, stand, plafond_kleuter_cent, plafond_lager_cent, marge_kleuter_cent, marge_lager_cent)
+    values ('2025-2026', 'voorbij', 5500, 11000, 200, 400), ('2026-2027', 'lopend', 5500, 11000, 200, 400);
+    select mt_intern.klassen_toepassen(j, ${tekst(JSON.stringify(["1KA", "2A", "3A", "4A", "4B", "6A"].map((naam, i) => ({ id: "k" + i, naam, groep: naam === "1KA" ? "Kleuter" : "Lager" }))))}::jsonb)
+      from (values ('2025-2026'), ('2026-2027')) as x(j);`);
+  if (opzet.code !== 0) return "de opzet voor de adapter mislukte: " + opzet.fout;
+
+  /** Eén oproep, zoals de serverfunctie: als de rol service_role, via de rol van de Data API. */
+  const stuur = async (uitstappen, ids, rol = "service_role") => {
+    const r = await voer("authenticator", `
+      begin;
+      select set_config('request.jwt.claims', '${JSON.stringify({ role: rol })}', true);
+      set local role ${rol};
+      select public.mt_uitstappen_bijwerken(${tekst(JSON.stringify(uitstappen))}::jsonb, ${ids === null ? "null" : "array[" + ids.map(tekst).join(", ") + "]::text[]"});
+      commit;`);
+    if (r.code !== 0) return { fout: r.fout };
+    // De eerste regel is wat set_config teruggeeft; het antwoord van de functie is de laatste.
+    const regel = r.uit.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("{")).pop();
+    return regel ? JSON.parse(regel) : { fout: "geen antwoord: " + r.uit };
+  };
+  const tellers = (r) => ["nieuw", "gewijzigd", "weg", "ongewijzigd", "ongeldig", "buiten", "geen", "gesloten", "ouder", "niet_gevonden"].map((naam) => naam + " " + r[naam]).join(", ");
+
+  // De eerste lezing: zeven uitstappen komen in de MT.
+  const eerste = await stuur(b.uitstappen, b.alleIds);
+  if (eerste.fout) return "de databank weigert het bericht van de adapter: " + eerste.fout;
+  if (tellers(eerste) !== "nieuw 7, gewijzigd 0, weg 0, ongewijzigd 0, ongeldig 1, buiten 1, geen 2, gesloten 0, ouder 0, niet_gevonden 0") return "de eerste lezing gaf: " + tellers(eerste);
+  const onbekend = eerste.onbekende_klassen;
+  if (!Array.isArray(onbekend) || onbekend.length !== 1 || onbekend[0].uitstap !== "u-onbekende-klas" || JSON.stringify(onbekend[0].klassen) !== '["Zonneklas"]') {
+    return "de onbekende klassen: " + JSON.stringify(onbekend);
+  }
+  const stand = await voer("supabase_admin", `
+    select string_agg(a.uitstap_id || ' ' || a.schooljaar || ' ' || a.bron_plan || ' ' || a.datum_start || ' ' || a.datum_eind || ' ' || a.meerdaags || ' '
+             || to_char(a.bron_gewijzigd_op at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') || ' ['
+             || coalesce((select string_agg(k.naam, ',' order by k.naam) from public.klaslijsten l join public.klassen k on k.id = l.klas_id where l.activiteit_id = a.id), '') || ']', '; ' order by a.uitstap_id)
+      from public.activiteiten a;`);
+  const verwacht = [
+    "u-aanvraag 2026-2027 aangevraagd 2026-12-03 2026-12-03 false 2026-11-10T08:00:00.123456 [1KA]",
+    "u-dag 2026-2027 bevestigd 2026-11-20 2026-11-20 false 2026-11-10T08:00:00.123456 [4A,4B]",
+    "u-geannuleerd 2026-2027 geannuleerd 2026-12-04 2026-12-04 false 2026-11-10T08:00:00.123456 [2A]",
+    "u-geen-lijst 2026-2027 aangevraagd 2026-12-10 2026-12-10 false 2026-11-10T08:00:00.123456 []",
+    "u-gwp 2026-2027 bevestigd 2026-09-23 2026-09-25 true 2026-11-10T08:00:00.123456 [6A]",
+    "u-onbekende-klas 2026-2027 bevestigd 2026-12-08 2026-12-08 false 2026-11-10T08:00:00.123456 [4A]",
+    "u-vorig-jaar 2025-2026 bevestigd 2026-03-10 2026-03-10 false 2026-11-10T08:00:00.123456 [3A]",
+  ].join("; ");
+  if (stand.code !== 0 || stand.uit.trim() !== verwacht) return "in de MT staat na de eerste lezing:\n" + stand.uit.trim() + "\nverwacht:\n" + verwacht + "\n" + stand.fout;
+
+  // Een tweede lezing wijzigt niets.
+  const tweede = await stuur(b.uitstappen, b.alleIds);
+  if (tweede.fout || tellers(tweede) !== "nieuw 0, gewijzigd 0, weg 0, ongewijzigd 7, ongeldig 1, buiten 1, geen 2, gesloten 0, ouder 0, niet_gevonden 0") return "de tweede lezing gaf: " + (tweede.fout || tellers(tweede));
+
+  // In delen, zoals de serverfunctie: enkel het laatste deel draagt de lijst van id's. u-dag staat er niet meer in.
+  const deel1 = await stuur(b.uitstappen.slice(0, 6), null);
+  if (deel1.fout || deel1.niet_gevonden !== 0) return "het eerste deel, zonder lijst van id's: " + (deel1.fout || tellers(deel1));
+  const deel2 = await stuur(b.uitstappen.slice(6), b.alleIds.filter((id) => id !== "u-dag"));
+  if (deel2.fout || deel2.niet_gevonden !== 1) return "het laatste deel, met de lijst van id's: " + (deel2.fout || tellers(deel2));
+  const weg = await voer("supabase_admin", "select string_agg(uitstap_id, ',' order by uitstap_id) from public.activiteiten where bron_stand = 'niet_gevonden';");
+  if (weg.uit.trim() !== "u-dag") return "niet meer gevonden: " + weg.uit.trim() + " (verwacht: u-dag)";
+
+  // Enkel de serverfunctie mag dit: een gewone gebruiker wordt geweigerd.
+  const gewoon = await stuur(b.uitstappen, b.alleIds, "authenticated");
+  if (!gewoon.fout || !/permission denied|42501/.test(gewoon.fout)) return "een gewone gebruiker werd niet geweigerd: " + JSON.stringify(gewoon);
+  return null;
+}
+
 Deno.test({
   name: "databank: de scripts op een nagebootste Supabase, herhaalbaar, en de proef in UTC en in Brussel",
   ignore: !AAN,
@@ -183,6 +273,9 @@ Deno.test({
       const voer = (gebruiker, sql) =>
         doe(bin + "/psql", ["-X", "-q", "-t", "-A", "-v", "ON_ERROR_STOP=1", "-h", map, "-p", POORT, "-U", gebruiker, "-d", "postgres", "-c", sql], { env: { PGTZ: "UTC" } });
       assert.equal(await wedloop(voer), null, "de wedloop");
+
+      // 7. De adapter en de databank samen (stap 3, B212).
+      assert.equal(await adapterEnDatabank(voer), null, "de adapter en de databank");
     } finally {
       await doe(bin + "/pg_ctl", ["-D", gegevens, "-m", "immediate", "stop"], { stil: true });
       await Deno.remove(map, { recursive: true });

@@ -1,4 +1,4 @@
-// MT · data.js · versie 0.6.2
+// MT · data.js · versie 0.7.0
 // De verbinding met de eigen databank (17.1, 17.8). De schermen praten enkel via dit bestand met
 // Supabase (regel 3). De publishable key gaat enkel als apikey mee; Authorization enkel met het
 // toegangsbewijs van een aangemelde gebruiker (design system 1.13).
@@ -6,10 +6,13 @@
 // fout erbij, zodat een scherm weet wat er scheelt zonder de tekst te lezen (64.4).
 // Sinds stap 2b: tabellen lezen met paginering (17.8), en de regel dat "geen rechten" nooit "geen
 // gegevens" betekent (17.3).
+// Sinds stap 3: de serverfunctie voor de uitstappen (B212), en het netwerk waarmee adapter.js de
+// uitstappentool leest om te tonen. Daar gaat enkel de publishable key van de uitstappentool heen.
 
-import { ACCOUNTFUNCTIE } from "./config.js";
+import { leesUitstappenKort } from "./adapter.js";
+import { ACCOUNTFUNCTIE, UITSTAPFUNCTIE, UITSTAPPENTOOL } from "./config.js";
 
-export const VERSIE = "0.6.2";
+export const VERSIE = "0.7.0";
 
 /** Zoals de REST-laag van de andere tools: na 12 seconden zonder antwoord is het een fout. */
 const WACHTTIJD = 12000;
@@ -115,11 +118,12 @@ export async function ping() {
 //   te_veel     te veel pogingen na elkaar (MT429)
 //   oproep      een oproep die niet klopt: een fout in de pagina (22023)
 //   ontbreekt   de functie bestaat niet: een script of de serverfunctie ontbreekt
+//   bron        de uitstappentool antwoordde niet, of niet volledig: er is niets gewijzigd
 //   verbinding  geen antwoord
 //   fout        al de rest
 
 const SOORT_PER_CODE = { "42501": "rechten", MT409: "gewijzigd", MT422: "kan_niet", MT429: "te_veel", "22023": "oproep" };
-const SOORTEN = new Set(["sessie", "rechten", "gewijzigd", "kan_niet", "te_veel", "oproep"]);
+const SOORTEN = new Set(["sessie", "rechten", "gewijzigd", "kan_niet", "te_veel", "oproep", "bron"]);
 const TEKST = {
   sessie: "Je sessie is verlopen. Meld opnieuw aan.",
   rechten: "Je hebt geen rechten voor deze handeling.",
@@ -165,15 +169,15 @@ export async function rpc(naam, args = {}) {
   return mislukt("fout", null, antwoord.status);
 }
 
-/** Roept de serverfunctie voor de accounts op (17.4), als wie aangemeld is. */
-export async function serverfunctie(actie, invoer = {}) {
+/** Eén oproep naar een serverfunctie (17.4), als wie aangemeld is. */
+async function roepFunctie(naam, lichaam) {
   const token = await tokenBron();
   if (!token) return mislukt("sessie", null, 0);
-  const antwoord = await roep("/functions/v1/" + ACCOUNTFUNCTIE, { methode: "POST", lichaam: { ...invoer, actie }, token, wachttijd: WACHTTIJD_SERVER });
+  const antwoord = await roep("/functions/v1/" + naam, { methode: "POST", lichaam, token, wachttijd: WACHTTIJD_SERVER });
   const g = antwoord.gegevens && typeof antwoord.gegevens === "object" ? antwoord.gegevens : {};
   if (antwoord.ok && g.ok === true) return { ok: true, gegevens: g };
   if (antwoord.status === 0) return mislukt("verbinding", null, 0);
-  if (antwoord.status === 404) return mislukt("ontbreekt", "De serverfunctie " + ACCOUNTFUNCTIE + " staat nog niet in Supabase.", 404);
+  if (antwoord.status === 404) return mislukt("ontbreekt", "De serverfunctie " + naam + " staat nog niet in Supabase.", 404);
   // onbekend: Supabase gaf geen antwoord, dus de wijziging kan toch gebeurd zijn (review 1, I2).
   const extra = { geblokkeerd: g.geblokkeerd === true, onbekend: g.onbekend === true };
   if (typeof g.code === "string" && typeof g.melding === "string") {
@@ -182,6 +186,59 @@ export async function serverfunctie(actie, invoer = {}) {
   // Een antwoord van Supabase zelf, vóór de functie: het toegangsbewijs is geweigerd, of de functie viel uit.
   if (antwoord.status === 401) return mislukt("sessie", null, 401);
   return mislukt("fout", "De serverfunctie gaf een fout (" + antwoord.status + "). Probeer het opnieuw.", antwoord.status, extra);
+}
+
+/** Roept de serverfunctie voor de accounts op (17.4), als wie aangemeld is. */
+export function serverfunctie(actie, invoer = {}) {
+  return roepFunctie(ACCOUNTFUNCTIE, { ...invoer, actie });
+}
+
+/**
+ * Vraagt de serverfunctie voor de uitstappen om de uitstappentool te lezen en de MT bij te werken
+ * (B212). De pagina geeft niets mee: de functie leest de bron zelf. Het antwoord zegt wat ze las en wat
+ * de databank ermee deed.
+ */
+export function uitstappenBijwerken() {
+  return roepFunctie(UITSTAPFUNCTIE, { actie: "bijwerken" });
+}
+
+// ---------- De uitstappentool lezen, om te tonen (adapter.js, T1) ----------
+
+/**
+ * Het netwerk voor adapter.js: zoals de eigen databank, met dezelfde grens in de tijd. De adapter
+ * bepaalt de vraag en de kop; daar staat enkel de publishable key van de uitstappentool in, als apikey.
+ */
+async function haalBron(adres, opties) {
+  const stopper = new AbortController();
+  const klok = setTimeout(() => stopper.abort(), WACHTTIJD);
+  try {
+    const antwoord = await fetch(adres, { ...opties, cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer", signal: stopper.signal });
+    if (!antwoord.ok) clearTimeout(klok);
+    return {
+      ok: antwoord.ok,
+      status: antwoord.status,
+      headers: antwoord.headers,
+      // De grens in de tijd geldt tot het hele antwoord gelezen is.
+      text: async () => {
+        try {
+          return await antwoord.text();
+        } finally {
+          clearTimeout(klok);
+        }
+      },
+    };
+  } catch (fout) {
+    clearTimeout(klok);
+    throw fout;
+  }
+}
+
+/**
+ * Wat de uitstappentool nu zegt, kort: van elke uitstap enkel wat de MT ervan bijhoudt. Geeft
+ * { ok: true, rijen } of { ok: false, reden }; een fout is nooit een lege lijst (T1).
+ */
+export function leesUitstappentool() {
+  return leesUitstappenKort(haalBron, UITSTAPPENTOOL);
 }
 
 // ---------- Tabellen lezen (17.8) ----------

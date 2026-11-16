@@ -1,13 +1,13 @@
-// MT · ui.js · versie 0.6.2
+// MT · ui.js · versie 0.7.0
 // De gedeelde onderdelen van de schermen (17.1). Het enige bestand dat HTML in de pagina zet
 // (regel 4, 17.10). Een scherm stelt zijn opbouw samen met het sjabloon html`…`: elke ingevoegde
 // waarde wordt daarin standaard tekst, zodat een naam nooit als opmaak op het scherm komt. Enkel
 // zet() hieronder schrijft die opbouw weg. Wat geen sjabloon is, wordt altijd gewone tekst.
 // Sinds stap 2 ook de onderdelen van de pagina, wie aangemeld is, de vensters, de beslissingsvraag en
-// de meldingen onderaan. Later komen hier de statuslabels, het ballonnetje van de materialentool, de
-// filterbalk, tabellen en bedragen.
+// de meldingen onderaan. Sinds stap 3 de bedragen (euro). Later komen hier de statuslabels, het
+// ballonnetje van de materialentool, de filterbalk en de tabellen.
 
-export const VERSIE = "0.6.2";
+export const VERSIE = "0.7.0";
 
 // ---------- Tekst en opmaak ----------
 
@@ -47,6 +47,17 @@ function omzetten(waarde) {
   if (Array.isArray(waarde)) return waarde.map(omzetten).join("");
   if (waarde === null || waarde === undefined || waarde === false) return "";
   return esc(waarde);
+}
+
+const EURO = new Intl.NumberFormat("nl-BE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/**
+ * Een bedrag in centen, zoals overal in de schermen (B191): altijd met twee decimalen en een punt voor
+ * de duizendtallen, bv. € 2.772,00. Een negatief bedrag krijgt een minteken ervoor: − € 0,33.
+ */
+export function euro(cent) {
+  if (typeof cent !== "number" || !Number.isFinite(cent)) return "";
+  return (cent < 0 ? "− " : "") + "€ " + EURO.format(Math.abs(cent) / 100);
 }
 
 /** Schrijft inhoud in een element: opmaak uit html`…` als HTML, al de rest als gewone tekst. */
@@ -144,6 +155,12 @@ export function toonAccount({ account, blijft, codeOp, melding }) {
 export function toonNaarGebruikers(actie) {
   $("kaartGebruikers").hidden = false;
   $("naarGebruikers").addEventListener("click", actie);
+}
+
+/** De kaart naar de rekentest (17.1), enkel voor een beheerder. */
+export function toonNaarRekentest(actie) {
+  $("kaartRekentest").hidden = false;
+  $("naarRekentest").addEventListener("click", actie);
 }
 
 const STANDEN = {

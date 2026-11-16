@@ -1,4 +1,4 @@
-// MT · config.js · versie 0.6.2
+// MT · config.js · versie 0.7.0
 // De adressen en sleutels per omgeving (17.1). De omgeving, test of productie, volgt uit het adres
 // van de pagina; een onbekend adres start niet.
 //
@@ -6,7 +6,7 @@
 // apikey mee (design system 1.13). Nooit een secret key (sb_secret_…) of een oude sleutel (eyJ…)
 // in dit bestand of elders in de repository: een test bewaakt dat.
 
-export const VERSIE = "0.6.2";
+export const VERSIE = "0.7.0";
 
 /** De MT per adres van de pagina. De productie komt erbij bij de livegang. */
 const OMGEVINGEN = Object.freeze({
@@ -22,7 +22,10 @@ const OMGEVINGEN = Object.freeze({
   }),
 });
 
-/** De uitstappentool (project klimop-software): enkel lezen, via adapter.js, vanaf stap 3 (B14, T1). */
+/**
+ * De uitstappentool (project klimop-software): enkel lezen, via adapter.js (B14, T1). De pagina leest om
+ * te tonen; de serverfunctie mt-uitstappen leest om de MT bij te werken, met dezelfde gegevens (B212).
+ */
 export const UITSTAPPENTOOL = Object.freeze({
   url: "https://vmvxawjfryaijkhhnnyr.supabase.co",
   sleutel: "sb_publishable_Xg0ezCxtbHfReSOcigRXvw_j5fwRjqg",
@@ -37,6 +40,12 @@ export const ACCOUNTFUNCTIE = "mt-accounts";
  * Supabase een andere versie, dan zegt de MT dat.
  */
 export const ACCOUNTFUNCTIE_VERSIE = "0.6.0";
+
+/** De serverfunctie voor de uitstappen (functies/mt-uitstappen): ze leest de uitstappentool en werkt de MT bij (17.4, B212). */
+export const UITSTAPFUNCTIE = "mt-uitstappen";
+
+/** De versie van die serverfunctie die deze versie van de MT verwacht, zoals bij de accounts. */
+export const UITSTAPFUNCTIE_VERSIE = "0.7.0";
 
 /** Het domein van de e-mailadressen van de school. Een ander adres mag, maar de MT vraagt het eerst na. */
 export const SCHOOLDOMEIN = "klimopvilvoorde.be";

@@ -1,6 +1,6 @@
 // MT · tests/regels_test.js
 // De vijf regels van 17.1, de regels voor SQL (17.3, 17.12) en geen geheimen in de repository.
-// Regel 1 en 2 gelden zodra rekenen.js en adapter.js bestaan (stap 3); tot dan staan ze op "ignored".
+// Regel 1 en 2 gelden sinds stap 3, voor rekenen.js en adapter.js.
 
 import assert from "node:assert/strict";
 import { alleTekstbestanden, bestaat, CODE, lees, naamVan, paginaModules, sqlScripts, sqlZonderCommentaar } from "./hulp.js";
@@ -38,6 +38,34 @@ Deno.test({
   },
 });
 
+Deno.test("regel 2: adapter.js importeert niets, en draait zo woord voor woord in de pagina en in de serverfunctie (B212)", () => {
+  const code = lees(CODE + "adapter.js");
+  assert.doesNotMatch(code, /^\s*import\b/m, "adapter.js importeert iets");
+  // Het netwerk krijgt hij mee (haal): zelf kent hij geen venster, geen browser en geen server.
+  for (const verboden of ["window", "navigator", "Deno", "globalThis", "self", "fetch", "console", "setTimeout", "crypto"]) {
+    assert.doesNotMatch(code, new RegExp("\\b" + verboden + "\\b"), "adapter.js gebruikt " + verboden);
+  }
+  // Alles wat hij deelt met de serverfunctie, staat onder één streep; daarboven enkel de uitleg en de versie.
+  const delen = code.split("// ==== adapter: gedeeld met de serverfunctie ====\n");
+  assert.equal(delen.length, 2);
+  assert.match(delen[0], /^(\/\/[^\n]*\n|\n)*export const VERSIE = "\d+\.\d+\.\d+";\n\n$/, "boven de streep van adapter.js staat meer dan de uitleg en de versie");
+});
+
+Deno.test("regel 2: adapter.js leest enkel, en enkel de twee tabellen van de uitstappentool", () => {
+  const code = lees(CODE + "adapter.js");
+  assert.doesNotMatch(code, /["'`](POST|PATCH|PUT|DELETE)["'`]/, "adapter.js kan schrijven in de uitstappentool");
+  assert.deepEqual([...code.matchAll(/method:\s*"([A-Z]+)"/g)].map((m) => m[1]), ["GET"]);
+  // Eén plaats bouwt het adres; elke vraag begint met een van de twee tabellen.
+  assert.equal((code.match(/\/rest\/v1\//g) || []).length, 1, "adapter.js bouwt op meer dan één plaats een adres");
+  assert.doesNotMatch(code, /\/auth\/v1|\/functions\/v1|\/storage\/v1|\/rpc\//, "adapter.js kent een ander pad dan de tabellen");
+  assert.match(code, /const TABEL_UITSTAPPEN = "uitstappen";\nconst TABEL_INSTELLINGEN = "instellingen";/);
+  const vragen = [...code.matchAll(/leesAlles\(haal, bron, ([A-Z_]+) \+/g)].map((m) => m[1]);
+  assert.deepEqual(vragen.sort(), ["TABEL_INSTELLINGEN", "TABEL_UITSTAPPEN", "TABEL_UITSTAPPEN"]);
+  assert.equal((code.match(/\bleesAlles\(/g) || []).length, 4, "een vraag aan de uitstappentool begint niet met een van de twee tabellen");
+  // De sleutel gaat enkel als apikey mee, nooit als Bearer.
+  assert.doesNotMatch(code, /Authorization|Bearer \S/, "adapter.js stuurt een Authorization-kop");
+});
+
 // ---------- Regel 3: enkel data.js praat met de databank ----------
 
 Deno.test("regel 3: enkel config.js kent de adressen van Supabase", () => {
@@ -62,7 +90,9 @@ Deno.test("regel 3: enkel auth.js gebruikt supabase-js, en de schermen roepen Su
       assert.doesNotMatch(code, /globalThis\.supabase|window\.supabase|createClient|signInWithPassword|\.auth\.mfa\b/, pad + " gebruikt supabase-js");
     }
     if (!["data.js", "config.js"].includes(naamVan(pad))) {
-      assert.doesNotMatch(code, /\/rest\/v1|\/auth\/v1|\/functions\/v1/, pad + " kent een pad van Supabase");
+      assert.doesNotMatch(code, /\/auth\/v1|\/functions\/v1/, pad + " kent een pad van Supabase");
+      // adapter.js kent één pad: dat van de tabellen van de uitstappentool, om te lezen (regel 2).
+      if (naamVan(pad) !== "adapter.js") assert.doesNotMatch(code, /\/rest\/v1/, pad + " kent een pad van Supabase");
     }
   }
 });
@@ -77,7 +107,7 @@ Deno.test("de opslag van de browser: enkel auth.js voor de aanmelding, en app.js
 });
 
 Deno.test("een wachtwoord of een toegangsbewijs komt nooit in de console of in de opslag", () => {
-  for (const pad of [...paginaModules(), "functies/mt-accounts/index.ts"]) {
+  for (const pad of [...paginaModules(), "functies/mt-accounts/index.ts", "functies/mt-uitstappen/index.ts"]) {
     const code = lees(pad);
     for (const m of code.matchAll(/console\.(log|info|warn|error|debug)\s*\(([^;]*)/g)) {
       assert.doesNotMatch(m[2], /wachtwoord|password|token|sleutel|geheim|secret/i, pad + " schrijft mogelijk een geheim naar de console: " + m[0].slice(0, 80));

@@ -1316,6 +1316,28 @@ select proef.zeker('klassen: met een lijst voor de hernoemde en voor de nieuwe k
   (select count(*) = 2 from public.klaslijsten l join public.klassen k on k.id = l.klas_id
     where l.activiteit_id = proef.act('u-n2') and k.bron_id in ('bronb', 'bronh')));
 
+-- "Klas onbekend" verdwijnt vanzelf bij de volgende lezing, ook als de uitstap zelf niet wijzigde: de
+-- serverfunctie stuurt bij elke lezing alle uitstappen, ook de ongewijzigde (stap 3, B212). De uitstap
+-- is hier aangevraagd, zodat ze verderop in geen enkele telling van lijsten meetelt.
+select proef.zeker('klas onbekend: een klas die de MT nog niet kent, komt terug als onbekend',
+  proef.lees(proef.uitstap('u-n3', '2026-01-02T10:00:00Z', proef.d(61), array['4A', 'Zonneklas'], 'aangevraagd'))
+    @> '{"nieuw": 1, "onbekende_klassen": [{"uitstap": "u-n3", "klassen": ["Zonneklas"]}]}'::jsonb);
+select proef.zeker('klas onbekend: de uitstap heeft enkel een lijst voor de klas die gekend is',
+  (select count(*) = 1 and bool_and(k.bron_id = 'brona') from public.klaslijsten l join public.klassen k on k.id = l.klas_id
+    where l.activiteit_id = proef.act('u-n3')));
+select proef.zeker('klas onbekend: de beheerder opent de MT, en de klassenlijst bevat de nieuwe klas',
+  proef.json(format('select public.mt_klassen_bijwerken(%L)',
+    proef.klassenlijst() || jsonb_build_object('id', 'bronz', 'naam', 'Zonneklas', 'groep', 'Lager'))) @> '{"nieuw": 1, "uitgezet": 0}'::jsonb);
+select proef.zeker('klas onbekend: bij de volgende lezing krijgt de ongewijzigde uitstap haar lijst, en is niets meer onbekend',
+  proef.lees(proef.uitstap('u-n3', '2026-01-02T10:00:00Z', proef.d(61), array['4A', 'Zonneklas'], 'aangevraagd'))
+    @> '{"gewijzigd": 1, "nieuw": 0, "onbekende_klassen": []}'::jsonb);
+select proef.zeker('klas onbekend: de uitstap heeft nu twee lijsten, en haar versie bleef die van de uitstappentool',
+  (select count(*) = 2 and bool_and(l.stand = 'open' and not l.vervallen) from public.klaslijsten l where l.activiteit_id = proef.act('u-n3'))
+  and (select bron_gewijzigd_op = '2026-01-02T10:00:00Z'::timestamptz from public.activiteiten where id = proef.act('u-n3')));
+select proef.zeker('klas onbekend: een derde lezing wijzigt niets meer',
+  proef.lees(proef.uitstap('u-n3', '2026-01-02T10:00:00Z', proef.d(61), array['4A', 'Zonneklas'], 'aangevraagd'))
+    @> '{"ongewijzigd": 1, "gewijzigd": 0, "onbekende_klassen": []}'::jsonb);
+
 insert into public.schooljaren (schooljaar) select proef.nieuw_jaar();
 select proef.zeker('schooljaar: bevestigen kan niet zonder plafonds en marges (B144)',
   proef.json(format('select public.mt_schooljaar_bevestigen(%L)', proef.nieuw_jaar())) ->> 'tekst' like '%plafonds%');

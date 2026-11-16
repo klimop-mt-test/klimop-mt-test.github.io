@@ -1,17 +1,18 @@
-// MT · app.js · versie 0.6.2
+// MT · app.js · versie 0.7.0
 // De start (17.1): nooit in een andere pagina, dezelfde versie in alle bestanden, de omgeving uit
 // het adres, de verbinding met de databank, en sinds stap 2 de aanmelding, het afmelden (17.2) en
-// de weg naar het scherm Gebruikers. Later ook de tabbladen en de keuzebalk scherp of minder scherp (B75).
+// de weg naar het scherm Gebruikers. Sinds stap 3 ook het lezen van de uitstappentool bij het openen
+// (B212) en de weg naar de rekentest. Later de tabbladen en de keuzebalk scherp of minder scherp (B75).
 //
 // app.js laadt de andere bestanden zelf, zodat een ontbrekend bestand een duidelijke melding geeft.
 // Wijkt een versie af, door een vergeten bestand of een oude kopie in de browser (GitHub Pages laat
 // die tot tien minuten toe), dan haalt de MT de bestanden één keer vers op en herlaadt. Lukt dat
 // niet, dan start ze niet en zegt ze wat je kan doen.
 
-export const VERSIE = "0.6.2";
+export const VERSIE = "0.7.0";
 
 /** De bestanden die de MT laadt. Elk heeft export const VERSIE; een test bewaakt deze lijst. */
-const MODULES = ["./config.js", "./ui.js", "./data.js", "./auth.js", "./aanmelden.js", "./gebruikers.js"];
+const MODULES = ["./config.js", "./ui.js", "./data.js", "./auth.js", "./aanmelden.js", "./gebruikers.js", "./rekenen.js", "./adapter.js", "./rekentest.js", "./uitstappentool.js"];
 
 /**
  * Alles wat vers opgehaald wordt als de versies verschillen. De adressen gelden ten opzichte van
@@ -48,7 +49,7 @@ async function start() {
     return;
   }
   vergeetHerstel();
-  const [config, ui, data, auth, aanmelden, gebruikers] = geladen;
+  const [config, ui, data, auth, aanmelden, gebruikers, , , rekentest, uitstappentool] = geladen;
 
   // 3. De omgeving volgt uit het adres; een onbekend adres start niet (17.1).
   const omgeving = config.omgeving(location.hostname);
@@ -110,9 +111,20 @@ async function start() {
   });
   ui.toon("start");
 
-  // 9. Het scherm Gebruikers, enkel voor een beheerder (B165). Is de aanmelding daar niet meer in
-  //    orde, bv. een code van meer dan twee weken, dan herlaadt de pagina en vraagt ze wat nodig is.
+  // 9. De uitstappentool (stap 3, B212): bij het openen vraagt de pagina de serverfunctie om de MT bij te
+  //    werken, voor elke rol, en toont ze wat ze zelf leest. Een leerkracht hoeft zo nooit te wachten
+  //    tot de beheerder de MT opende.
+  uitstappentool.start({ deel: document.getElementById("kaartUitstappentool"), account, herstart: () => location.reload() });
+
+  // 10. De rekentest en het scherm Gebruikers, enkel voor een beheerder (B165). Is de aanmelding daar
+  //     niet meer in orde, bv. een code van meer dan twee weken, dan herlaadt de pagina en vraagt ze
+  //     wat nodig is.
   if (account.rol === "beheerder") {
+    let test = null;
+    ui.toonNaarRekentest(() => {
+      ui.toon("rekentest");
+      if (!test) test = rekentest.start({ deel: document.getElementById("view-rekentest"), terug: () => ui.toon("start") });
+    });
     let scherm = null;
     ui.toonNaarGebruikers(() => {
       ui.toon("gebruikers");

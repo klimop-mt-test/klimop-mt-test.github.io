@@ -7,11 +7,11 @@ Testversie van de MT, de maximumfactuur-tool van GO! basisschool Klim-Op. Enkel 
 | Map of bestand | Inhoud |
 |---|---|
 | `index.html` | de pagina |
-| `code/` | de werking, één bestand per taak: `app.js` de start, `config.js` de adressen, `ui.js` alles op het scherm, `data.js` de databank, `auth.js` de aanmelding, `aanmelden.js` het aanmeldscherm en `gebruikers.js` het scherm Gebruikers. In `code/lib/` staat supabase-js 2.116.0, het officiële bestand uit het npm-pakket, ongewijzigd, met zijn licentie |
-| `functies/` | de serverfunctie voor de accounts, `mt-accounts`: één bestand, dat je in Supabase plakt bij Edge Functions. De sleutel die ze gebruikt, geeft Supabase haar zelf: hij staat nergens in deze repository |
+| `code/` | de werking, één bestand per taak: `app.js` de start, `config.js` de adressen, `ui.js` alles op het scherm, `data.js` de databank, `auth.js` de aanmelding, `aanmelden.js` het aanmeldscherm, `gebruikers.js` het scherm Gebruikers, `rekenen.js` het rekencontract, `adapter.js` het lezen van de uitstappentool, `rekentest.js` de testgevallen van het rekencontract en `uitstappentool.js` wat de startpagina daarvan toont. In `code/lib/` staat supabase-js 2.116.0, het officiële bestand uit het npm-pakket, ongewijzigd, met zijn licentie |
+| `functies/` | de twee serverfuncties, elk één bestand dat je in Supabase plakt bij Edge Functions: `mt-accounts` voor de accounts, en `mt-uitstappen`, die de uitstappentool leest en de MT bijwerkt. De sleutel die ze gebruiken, geeft Supabase hun zelf: hij staat nergens in deze repository. In `mt-uitstappen` staat de tekst van `code/adapter.js` woord voor woord; een test bewaakt dat |
 | `opmaak/` | de huisstijl (`mt.css`), het logo, en het lettertype Outfit met zijn licentie |
 | `sql/` | de scripts voor Supabase, op volgorde: elk script voer je één keer uit in de SQL Editor, het volgende pas na het vorige |
-| `tests/` | de automatische tests; `tests/databank/` bootst Supabase na en bevat de proef op de databank en de lijst van bewust ingebouwde fouten, met enkel verzonnen gegevens. De databanktest speelt ook een wedloop na: twee verbindingen tegelijk |
+| `tests/` | de automatische tests; `tests/databank/` bootst Supabase na en bevat de proef op de databank en de lijst van bewust ingebouwde fouten, met enkel verzonnen gegevens. De databanktest speelt ook een wedloop na, twee verbindingen tegelijk, en stuurt wat de echte `adapter.js` klaarzet door de echte databankfunctie |
 | `.github/` | de tests en de keep-alive in GitHub Actions |
 
 ## Eén vaste regel voor deze organisatie

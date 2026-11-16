@@ -70,3 +70,33 @@ export function sqlZonderCommentaar(tekst) {
     .replace(/--[^\n]*/g, "")
     .replace(/\bdo\s+\$\$[\s\S]*?\$\$\s*;/gi, "");
 }
+
+/**
+ * Een vaste reeks "willekeurige" getallen: dezelfde gevallen bij elke run, zodat een fout terug te
+ * vinden is. kies(n) geeft een geheel getal van 0 tot n - 1.
+ */
+export function reeks(zaad) {
+  let a = zaad >>> 0;
+  return (tot) => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return Math.floor((((t ^ (t >>> 14)) >>> 0) / 4294967296) * tot);
+  };
+}
+
+/** De afdruk (SHA-256) van een tekst, als zestien-tallig getal. */
+export async function afdruk(tekst) {
+  const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(tekst)));
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Een instelling van de omgeving, of null als ze ontbreekt of als de test ze niet mag lezen. */
+export function instelling(naam) {
+  try {
+    return Deno.env.get(naam) ?? null;
+  } catch {
+    return null;
+  }
+}

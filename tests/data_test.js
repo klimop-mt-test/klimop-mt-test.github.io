@@ -422,3 +422,83 @@ Deno.test("afmelden bij Supabase: enkel deze sessie, met het toegangsbewijs, en 
   }, () => afmeldenBijSupabase(null));
   assert.equal(geroepen, false, "zonder toegangsbewijs valt er niets af te melden");
 });
+
+// ---------- De serverfunctie voor de uitstappen, en de uitstappentool lezen (stap 3) ----------
+
+import { UITSTAPFUNCTIE, UITSTAPPENTOOL } from "../code/config.js";
+import { leesUitstappentool, uitstappenBijwerken } from "../code/data.js";
+
+Deno.test("uitstappen bijwerken: de pagina vraagt het, en geeft zelf niets door", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("kop.inhoud.handtekening"));
+  let gezien = null;
+  const r = await metFetch(async (url, opties) => {
+    gezien = { url, opties };
+    return json(200, { ok: true, versie: "0.7.0", uitstappen: { nieuw: 2 } });
+  }, uitstappenBijwerken);
+  assert.equal(r.ok, true);
+  assert.equal(r.gegevens.uitstappen.nieuw, 2);
+  assert.equal(gezien.url, PROJECT.mt.url + "/functions/v1/" + UITSTAPFUNCTIE);
+  assert.equal(gezien.opties.method, "POST");
+  // Geen uitstap, geen klas, geen id: wat in de MT komt, leest de serverfunctie zelf (B212).
+  assert.equal(gezien.opties.body, '{"actie":"bijwerken"}');
+  assert.equal(gezien.opties.headers.apikey, PROJECT.mt.sleutel);
+  assert.equal(gezien.opties.headers.Authorization, "Bearer kop.inhoud.handtekening");
+});
+
+Deno.test("uitstappen bijwerken: wat er scheelt, in de soort en de tekst van de functie", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("kop.inhoud.handtekening"));
+  const geval = (antwoord) => metFetch(antwoord, uitstappenBijwerken);
+  const bron = await geval(async () => json(503, { ok: false, code: "bron", melding: "De uitstappentool antwoordt niet." }));
+  assert.deepEqual([bron.ok, bron.soort, bron.tekst, bron.status], [false, "bron", "De uitstappentool antwoordt niet.", 503]);
+  const leeg = await geval(async () => json(422, { ok: false, code: "kan_niet", melding: "de uitstappentool gaf geen enkele uitstap terug" }));
+  assert.deepEqual([leeg.soort, leeg.tekst], ["kan_niet", "De uitstappentool gaf geen enkele uitstap terug."]);
+  const bezet = await geval(async () => json(503, { ok: false, code: "databank", melding: "De databank van de MT antwoordt niet." }));
+  assert.equal(bezet.soort, "fout");
+  const weg = await geval(async () => json(404, { code: "NOT_FOUND", message: "Requested function was not found" }));
+  assert.deepEqual([weg.soort, weg.tekst], ["ontbreekt", "De serverfunctie " + UITSTAPFUNCTIE + " staat nog niet in Supabase."]);
+  const stil = await geval(async () => {
+    throw new TypeError("Failed to fetch");
+  });
+  assert.equal(stil.soort, "verbinding");
+  assert.equal((await geval(async () => json(401, { msg: "Invalid JWT" }))).soort, "sessie");
+  stelToken(() => Promise.resolve(null));
+  let opgeroepen = false;
+  const zonder = await metFetch(async () => {
+    opgeroepen = true;
+    return json(200, { ok: true });
+  }, uitstappenBijwerken);
+  assert.deepEqual([zonder.soort, opgeroepen], ["sessie", false]);
+});
+
+Deno.test("de uitstappentool lezen: enkel haar publishable key, als apikey, en nooit het toegangsbewijs van de MT", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("kop.inhoud.handtekening"));
+  const oproepen = [];
+  const r = await metFetch(async (url, opties) => {
+    oproepen.push({ url, opties });
+    return new Response(JSON.stringify([{ id: "u1", updated_at: "2026-11-10T08:00:00+00:00", v: 2, categorie: null, type: null, datumStart: "2026-11-20", datumEind: null, klassen: ["4A"], planStatus: "bevestigd", verwijderdOp: null }]),
+      { status: 200, headers: { "content-range": "0-0/1" } });
+  }, leesUitstappentool);
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.rijen, [{ id: "u1", updated_at: "2026-11-10T08:00:00+00:00", trip: { v: 2, categorie: null, type: null, datumStart: "2026-11-20", datumEind: null, klassen: ["4A"], planStatus: "bevestigd", verwijderdOp: null } }]);
+  assert.equal(oproepen.length, 1);
+  const { url, opties } = oproepen[0];
+  assert.ok(url.startsWith(UITSTAPPENTOOL.url + "/rest/v1/uitstappen?select=id,updated_at,"));
+  assert.deepEqual(opties.headers, { apikey: UITSTAPPENTOOL.sleutel, Accept: "application/json", Prefer: "count=exact" });
+  assert.doesNotMatch(JSON.stringify([url, opties.headers]), /handtekening|sb_publishable_voorbeeld/, "een sleutel of het toegangsbewijs van de MT gaat naar de uitstappentool");
+  assert.deepEqual([opties.method, opties.redirect, opties.cache, opties.credentials, opties.referrerPolicy], ["GET", "error", "no-store", "omit", "no-referrer"]);
+  assert.ok(opties.signal instanceof AbortSignal, "de lezing heeft geen grens in de tijd");
+});
+
+Deno.test("de uitstappentool lezen: geen antwoord of een fout is nooit een lege lijst", async () => {
+  const stil = await metFetch(async () => {
+    throw new TypeError("Failed to fetch");
+  }, leesUitstappentool);
+  assert.deepEqual(stil, { ok: false, reden: "verbinding", status: 0 });
+  const fout = await metFetch(async () => new Response("kapot", { status: 500 }), leesUitstappentool);
+  assert.deepEqual(fout, { ok: false, reden: "fout", status: 500 });
+  const half = await metFetch(async () => new Response("[]", { status: 200, headers: { "content-range": "*/7" } }), leesUitstappentool);
+  assert.deepEqual(half, { ok: false, reden: "onvolledig", status: 0 });
+});

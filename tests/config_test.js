@@ -2,7 +2,7 @@
 // De omgeving volgt uit het adres; een onbekend adres start niet (17.1). Enkel publishable keys.
 
 import assert from "node:assert/strict";
-import { ACCOUNTFUNCTIE, ACCOUNTFUNCTIE_VERSIE, alleOmgevingen, MAILVOORBEELD, omgeving, SCHOOLDOMEIN, UITSTAPPENTOOL } from "../code/config.js";
+import { ACCOUNTFUNCTIE, ACCOUNTFUNCTIE_VERSIE, alleOmgevingen, MAILVOORBEELD, omgeving, SCHOOLDOMEIN, UITSTAPFUNCTIE, UITSTAPFUNCTIE_VERSIE, UITSTAPPENTOOL } from "../code/config.js";
 import { bestaat } from "./hulp.js";
 
 Deno.test("het testadres geeft de testomgeving", () => {
@@ -38,6 +38,13 @@ Deno.test("elke omgeving heeft een eigen naam in de authenticator-app", () => {
 Deno.test("de serverfunctie voor de accounts staat in functies/, onder de naam die de pagina oproept", () => {
   assert.match(ACCOUNTFUNCTIE, /^[a-z][a-z0-9-]+$/);
   assert.ok(bestaat("functies/" + ACCOUNTFUNCTIE + "/index.ts"), "functies/" + ACCOUNTFUNCTIE + "/index.ts ontbreekt");
+});
+
+Deno.test("de serverfunctie voor de uitstappen staat in functies/, onder de naam die de pagina oproept", () => {
+  assert.match(UITSTAPFUNCTIE, /^[a-z][a-z0-9-]+$/);
+  assert.notEqual(UITSTAPFUNCTIE, ACCOUNTFUNCTIE);
+  assert.ok(bestaat("functies/" + UITSTAPFUNCTIE + "/index.ts"), "functies/" + UITSTAPFUNCTIE + "/index.ts ontbreekt");
+  assert.match(UITSTAPFUNCTIE_VERSIE, /^[0-9]+\.[0-9]+\.[0-9]+$/);
 });
 
 Deno.test("de verwachte versie van de serverfunctie en het domein van de school", () => {
