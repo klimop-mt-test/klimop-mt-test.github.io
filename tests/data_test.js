@@ -755,3 +755,182 @@ Deno.test("de pagina wacht dertig seconden op een serverfunctie, en twaalf op de
   const accounts = lees("functies/mt-accounts/index.ts");
   assert.ok(getal(accounts, "TIJD_PER_VERZOEK") + getal(accounts, "TIJD_VOOR_EINDE") <= 30000 - 2500, "mt-accounts kan langer duren dan de pagina wacht");
 });
+
+// ---------- In een beheertabel schrijven (stap 4) ----------
+
+import { voegToe, wijzig } from "../code/data.js";
+
+/** Voert werk uit met een nagebootste databank en onthoudt elke oproep. */
+async function metOproepen(antwoord, werk) {
+  const oproepen = [];
+  const uit = await metFetch(async (url, opties) => {
+    oproepen.push({ url: String(url).replace(PROJECT.mt.url, ""), methode: opties.method, koppen: opties.headers, lichaam: opties.body === undefined ? undefined : JSON.parse(opties.body) });
+    return antwoord(String(url), opties, oproepen.length);
+  }, werk);
+  return { uit, oproepen };
+}
+
+Deno.test("toevoegen: één rij, enkel de kolommen die meegaan, en de rij komt terug zoals ze bewaard is", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  const bewaard = { schooljaar: "2026-2027", stand: "in_te_vullen", plafond_lager_cent: null };
+  const { uit, oproepen } = await metOproepen(async () => json(201, [bewaard]),
+    () => voegToe("schooljaren", { schooljaar: "2026-2027", prijs_per_kind_afwezigen: false }, { kolommen: ["schooljaar", "stand", "plafond_lager_cent"] }));
+  assert.deepEqual(uit, { ok: true, gegevens: bewaard });
+  assert.equal(oproepen.length, 1);
+  assert.equal(oproepen[0].url, "/rest/v1/schooljaren?columns=schooljaar,prijs_per_kind_afwezigen&select=schooljaar,stand,plafond_lager_cent");
+  assert.equal(oproepen[0].methode, "POST");
+  assert.deepEqual(oproepen[0].lichaam, { schooljaar: "2026-2027", prijs_per_kind_afwezigen: false });
+  assert.equal(oproepen[0].koppen.Prefer, "return=representation");
+  assert.equal(oproepen[0].koppen.apikey, PROJECT.mt.sleutel);
+  assert.equal(oproepen[0].koppen.Authorization, "Bearer a.b.c");
+});
+
+Deno.test("toevoegen: zonder aanmelding, of met iets dat geen rij is, gaat er niets naar de databank", async () => {
+  stel(PROJECT);
+  const kolommen = { kolommen: ["schooljaar"] };
+  stelToken(() => Promise.resolve(null));
+  const zonder = await metOproepen(async () => json(201, [{}]), () => voegToe("schooljaren", { schooljaar: "2026-2027" }, kolommen));
+  assert.deepEqual([zonder.uit.ok, zonder.uit.soort, zonder.oproepen.length], [false, "sessie", 0]);
+  stelToken(() => Promise.resolve("a.b.c"));
+  const fout = [
+    () => voegToe("schooljaren?x=1", { schooljaar: "2026-2027" }, kolommen),
+    () => voegToe("schooljaren", {}, kolommen),
+    () => voegToe("schooljaren", null, kolommen),
+    () => voegToe("schooljaren", [{ schooljaar: "2026-2027" }], kolommen),
+    () => voegToe("schooljaren", { "schooljaar&stand": "x" }, kolommen),
+    () => voegToe("schooljaren", { schooljaar: { naar: "elders" } }, kolommen),
+    () => voegToe("schooljaren", { schooljaar: "2026-2027" }, { kolommen: [] }),
+    () => voegToe("schooljaren", { schooljaar: "2026-2027" }, { kolommen: ["stand,geheim"] }),
+  ];
+  for (const [nr, werk] of fout.entries()) {
+    const r = await metOproepen(async () => json(201, [{}]), werk);
+    assert.deepEqual([r.uit.ok, r.uit.soort, r.oproepen.length], [false, "oproep", 0], "geval " + nr);
+  }
+});
+
+Deno.test("schrijven: wat de databank weigert, in de soort en de tekst; geen antwoord is 'niet zeker of het bewaard is'", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  const gevallen = [
+    [409, { code: "23505", message: "duplicate key value violates unique constraint \"schooljaren_pkey\"" }, "gewijzigd", /bestaat al/],
+    [403, { code: "42501", message: "new row violates row-level security policy for table \"schooljaren\"" }, "rechten", /geen rechten/],
+    [403, { code: "42501", message: "MT: schooljaar 2024-2025 is afgesloten en kan niet meer wijzigen" }, "rechten", /^Schooljaar 2024-2025 is afgesloten en kan niet meer wijzigen\.$/],
+    [400, { code: "23514", message: "new row for relation \"schooljaren\" violates check constraint" }, "kan_niet", /weigert deze waarde/],
+    [400, { code: "MT422", message: "MT: dit kan niet meer" }, "kan_niet", /^Dit kan niet meer\.$/],
+    [401, { code: "PGRST301", message: "JWT expired" }, "sessie", /sessie/],
+    [404, { code: "PGRST205", message: "Could not find the table" }, "ontbreekt", /SQL-script/],
+    [400, { code: "42703", message: "column \"nieuw\" does not exist" }, "ontbreekt", /SQL-script/],
+    [500, { code: "XX000", message: "iets geheims" }, "fout", /^De databank gaf een fout\. Probeer het opnieuw\.$/],
+  ];
+  for (const [status, lichaam, soort, tekst] of gevallen) {
+    for (const werk of [
+      () => voegToe("schooljaren", { schooljaar: "2026-2027" }, { kolommen: ["schooljaar"] }),
+      () => wijzig("schooljaren", { sleutel: { schooljaar: "2026-2027" }, wijziging: { plafond_lager_cent: 11000 }, kolommen: ["schooljaar"] }),
+    ]) {
+      const r = (await metOproepen(async () => json(status, lichaam), werk)).uit;
+      assert.deepEqual([r.ok, r.soort, r.status], [false, soort, status], JSON.stringify(lichaam));
+      assert.match(r.tekst, tekst, JSON.stringify(lichaam));
+      assert.doesNotMatch(r.tekst, /geheims|schooljaren_pkey/);
+    }
+  }
+  // Geen antwoord: de wijziging kan toch bewaard zijn. Dat komt mee tot bij het scherm.
+  for (const werk of [
+    () => voegToe("schooljaren", { schooljaar: "2026-2027" }, { kolommen: ["schooljaar"] }),
+    () => wijzig("schooljaren", { sleutel: { schooljaar: "2026-2027" }, wijziging: { plafond_lager_cent: 11000 }, kolommen: ["schooljaar"] }),
+  ]) {
+    const stil = await metFetch(async () => {
+      throw new TypeError("Failed to fetch");
+    }, werk);
+    assert.deepEqual([stil.ok, stil.soort, stil.extra.onbekend], [false, "verbinding", true]);
+    assert.match(stil.tekst, /niet zeker of dit bewaard is/);
+    // Een antwoord zonder de rij erin bevestigt niets.
+    const leeg = (await metOproepen(async () => new Response("", { status: 200 }), werk)).uit;
+    assert.equal(leeg.ok, false);
+  }
+  const zonderRij = (await metOproepen(async () => json(201, []), () => voegToe("schooljaren", { schooljaar: "2026-2027" }, { kolommen: ["schooljaar"] }))).uit;
+  assert.deepEqual([zonderRij.ok, zonderRij.soort, zonderRij.extra.onbekend], [false, "fout", true]);
+  const vreemd = (await metOproepen(async () => json(200, ["tekst"]), () => wijzig("schooljaren", { sleutel: { schooljaar: "2026-2027" }, wijziging: { plafond_lager_cent: 1 }, kolommen: ["schooljaar"] }))).uit;
+  assert.deepEqual([vreemd.ok, vreemd.soort, vreemd.extra.onbekend], [false, "fout", true]);
+});
+
+Deno.test("wijzigen: één rij, op haar sleutel, enkel als ze nog is wat het scherm toonde, en ze komt terug zoals ze bewaard is", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  const bewaard = { schooljaar: "2026-2027", stand: "in_te_vullen", plafond_lager_cent: 11000 };
+  const { uit, oproepen } = await metOproepen(async () => json(200, [bewaard]), () =>
+    wijzig("schooljaren", { sleutel: { schooljaar: "2026-2027" }, wijziging: { plafond_lager_cent: 11000, marge_lager_cent: null }, als: { stand: "in_te_vullen", afgesloten_op: null }, kolommen: ["schooljaar", "stand", "plafond_lager_cent"] }));
+  assert.deepEqual(uit, { ok: true, gegevens: bewaard });
+  assert.equal(oproepen.length, 1);
+  assert.equal(oproepen[0].url, "/rest/v1/schooljaren?stand=eq.in_te_vullen&afgesloten_op=is.null&schooljaar=eq.2026-2027&select=schooljaar,stand,plafond_lager_cent");
+  assert.equal(oproepen[0].methode, "PATCH");
+  assert.deepEqual(oproepen[0].lichaam, { plafond_lager_cent: 11000, marge_lager_cent: null });
+  assert.equal(oproepen[0].koppen.Prefer, "return=representation");
+  assert.equal(oproepen[0].koppen.Authorization, "Bearer a.b.c");
+  // Een waarde wijzigt nooit de vraag zelf, en de sleutel wint van "als".
+  const raar = await metOproepen(async () => json(200, [{ id: true }]), () =>
+    wijzig("statussen", { sleutel: { id: "a&b=c d" }, wijziging: { naam: "Ziek, of (toch) niet" }, als: { id: "iets anders", actief: true }, kolommen: ["id"] }));
+  assert.equal(raar.oproepen[0].url, "/rest/v1/statussen?id=eq.a%26b%3Dc%20d&actief=eq.true&select=id");
+  assert.deepEqual(raar.oproepen[0].lichaam, { naam: "Ziek, of (toch) niet" });
+});
+
+Deno.test("wijzigen: zonder sleutel vertrekt er niets: een wijziging gaat nooit naar een hele tabel", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  const basis = { wijziging: { plafond_lager_cent: 1 }, kolommen: ["schooljaar"] };
+  const fout = [
+    () => wijzig("schooljaren", { ...basis }),
+    () => wijzig("schooljaren", { ...basis, sleutel: {} }),
+    () => wijzig("schooljaren", { ...basis, sleutel: { schooljaar: null } }),
+    () => wijzig("schooljaren", { ...basis, sleutel: { schooljaar: "" } }),
+    () => wijzig("schooljaren", { ...basis, sleutel: { schooljaar: undefined } }),
+    () => wijzig("schooljaren", { ...basis, sleutel: { "schooljaar=neq.x&stand": "x" } }),
+    () => wijzig("schooljaren", { ...basis, sleutel: { schooljaar: ["2026-2027", "2025-2026"] } }),
+    () => wijzig("schooljaren", { ...basis, sleutel: { schooljaar: "2026-2027" }, wijziging: {} }),
+    () => wijzig("schooljaren", { ...basis, sleutel: { schooljaar: "2026-2027" }, als: { "or": "(stand.eq.lopend)", "stand)": 1 } }),
+    () => wijzig("schooljaren", { ...basis, sleutel: { schooljaar: "2026-2027" }, kolommen: [] }),
+    () => wijzig("public.schooljaren", { ...basis, sleutel: { schooljaar: "2026-2027" } }),
+  ];
+  for (const [nr, werk] of fout.entries()) {
+    const r = await metOproepen(async () => json(200, [{}]), werk);
+    assert.deepEqual([r.uit.ok, r.uit.soort, r.oproepen.length], [false, "oproep", 0], "geval " + nr);
+  }
+  stelToken(() => Promise.resolve(null));
+  const zonder = await metOproepen(async () => json(200, [{}]), () => wijzig("schooljaren", { ...basis, sleutel: { schooljaar: "2026-2027" } }));
+  assert.deepEqual([zonder.uit.ok, zonder.uit.soort, zonder.oproepen.length], [false, "sessie", 0]);
+});
+
+Deno.test("wijzigen: wijzigt er geen rij, dan is ze intussen gewijzigd, tenzij de aanmelding niet meer in orde is (17.3)", async () => {
+  stel(PROJECT);
+  stelToken(() => Promise.resolve("a.b.c"));
+  const werk = () => wijzig("schooljaren", { sleutel: { schooljaar: "2026-2027" }, wijziging: { plafond_lager_cent: 1 }, als: { stand: "in_te_vullen" }, kolommen: ["schooljaar"] });
+  const databank = (account) => async (url) => (url.endsWith("/rest/v1/rpc/mt_mijn_account") ? account() : json(200, []));
+  const intussen = await metOproepen(databank(() => json(200, { id: "g1", rol: "beheerder" })), werk);
+  assert.deepEqual([intussen.uit.ok, intussen.uit.soort], [false, "gewijzigd"]);
+  assert.match(intussen.uit.tekst, /Iemand wijzigde dit intussen/);
+  assert.deepEqual(intussen.oproepen.map((o) => o.methode + " " + o.url.split("?")[0]), ["PATCH /rest/v1/schooljaren", "POST /rest/v1/rpc/mt_mijn_account"]);
+  const geenRechten = await metOproepen(databank(() => json(403, { code: "42501", message: "MT: geen rechten voor deze handeling" })), werk);
+  assert.deepEqual([geenRechten.uit.ok, geenRechten.uit.soort], [false, "rechten"]);
+  const verlopen = await metOproepen(databank(() => json(401, { code: "PGRST301", message: "JWT expired" })), werk);
+  assert.deepEqual([verlopen.uit.ok, verlopen.uit.soort], [false, "sessie"]);
+  // Meer dan één rij op één sleutel hoort niet te kunnen: dat is nooit "gelukt".
+  const twee = await metOproepen(async () => json(200, [{ schooljaar: "a" }, { schooljaar: "b" }]), werk);
+  assert.deepEqual([twee.uit.ok, twee.uit.soort], [false, "fout"]);
+  assert.match(twee.uit.tekst, /meer dan één rij/);
+});
+
+Deno.test("elke tabel die de pagina wijzigt, wijzigt ze op haar echte sleutel: de primary key in de SQL-scripts", () => {
+  assert.deepEqual(sleutelVan("instellingen"), ["id"]);
+  let gevonden = 0;
+  for (const pad of paginaModules()) {
+    const bron = lees(pad);
+    for (const m of bron.matchAll(/data\.wijzig\("(\w+)",\s*\{\s*sleutel:\s*\{([^}]*)\}/g)) {
+      const kolommen = [...m[2].matchAll(/(?:^|,)\s*(\w+)\s*(?::|,|$)/g)].map((k) => k[1]);
+      assert.deepEqual(kolommen, sleutelVan(m[1]), pad + " wijzigt " + m[1] + " op een andere sleutel dan haar primary key");
+      gevonden++;
+    }
+    // Elke wijziging in de pagina heeft die vorm: de naam van de tabel en de sleutel staan er letterlijk.
+    assert.equal([...bron.matchAll(/data\.wijzig\(/g)].length, [...bron.matchAll(/data\.wijzig\("(\w+)",\s*\{\s*sleutel:\s*\{([^}]*)\}/g)].length, pad + ": een wijziging zonder letterlijke tabel en sleutel");
+  }
+  assert.ok(gevonden >= 1, "de test vond geen enkele wijziging in de pagina");
+});

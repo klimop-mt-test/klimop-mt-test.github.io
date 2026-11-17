@@ -1,4 +1,4 @@
-// MT · rekentest.js · versie 0.8.0
+// MT · rekentest.js · versie 0.9.0
 // De testgevallen van het rekencontract (mt-rekencontract.md, versie 20, deel 2), met het verwachte en
 // het berekende bedrag: de testpagina van 17.1. Wat hier staat, is fase 1: A1, A2, A6, G1 tot G9,
 // G11a, G11c, G12 en G18 tot G20. De gevallen van de facturatie en de voorschotten volgen in fase 2,
@@ -16,7 +16,7 @@ import {
 } from "./rekenen.js";
 import { euro, html, zet } from "./ui.js";
 
-export const VERSIE = "0.8.0";
+export const VERSIE = "0.9.0";
 
 // ---------- Zonder browser te testen ----------
 
@@ -389,7 +389,7 @@ export function start({ deel, terug }) {
   const gevallen = voerUit();
   const t = telling(gevallen);
   zet(deel, html`
-    <button class="btn-link" type="button" data-doe="terug">← Terug</button>
+    <button class="btn-link" type="button" data-doe="terug">← Instellingen</button>
     <div class="page-head big">
       <div>
         <h2 tabindex="-1">Rekentest</h2>

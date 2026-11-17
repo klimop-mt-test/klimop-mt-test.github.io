@@ -85,7 +85,9 @@ const ENKEL = instelling("MT_FOUTEN_SCRIPT");
  *      lukt, en precies één account is daarna geblokkeerd. Wie een handeling start, blijft zelf bruikbaar;
  *   2. hetzelfde adres wordt twee keer tegelijk aangemaakt: precies één start lukt;
  *   3. terwijl de uitstappen bijgewerkt worden, geeft iemand bij dezelfde activiteit iets in: dat wacht
- *      niet op het bijwerken (review 2: R2-11).
+ *      niet op het bijwerken (review 2: R2-11);
+ *   4. terwijl een lezing van de uitstappentool bezig is, start een beheerder een schooljaar: de start
+ *      wacht tot het deel klaar is, en breekt de lezing dan af (stap 4a, sql/007_schooljaar.sql).
  * voer(gebruiker, sql) voert SQL uit op de databank. Geeft null als alles klopt, anders wat misliep.
  */
 async function wedloop(voer) {
@@ -167,6 +169,45 @@ async function wedloop(voer) {
   if (klaar.code !== 0) return "het bijwerken tijdens het ingeven mislukte: " + klaar.fout;
   if (opruimen.code !== 0) return "het opruimen na het slot mislukte: " + opruimen.fout;
   if (ingeven.code !== 0) return "een tussenkomst ingeven terwijl de uitstappen bijgewerkt worden, moest wachten: " + ingeven.fout.trim();
+
+  // 4. Een schooljaar starten terwijl een lezing bezig is (stap 4a). De lezing kreeg haar nummer en gaf een deel
+  //    door, in een transactie die nog openstaat: zonder het slot van de lezingen ziet de start haar niet, en loopt
+  //    ze daarna gewoon door, met wat ze vóór de start las. Met het slot wacht de start, en breekt ze de lezing af.
+  //    Het schooljaar van de vorige stap gaat even terug naar "in te vullen": zo kan het starten, op elke dag.
+  const terug = await voer("supabase_admin", `
+    set session_replication_role = replica;
+    update public.schooljaren set stand = 'in_te_vullen', lopend_sinds = null where schooljaar = '2026-2027';`);
+  if (terug.code !== 0) return "de opzet voor de start van een schooljaar mislukte: " + terug.fout;
+  const leest = voer("authenticator", `
+    begin;
+    select set_config('request.jwt.claims', '{"role":"service_role"}', true);
+    set local role service_role;
+    do $$
+    declare n bigint;
+    begin
+      n := (public.mt_lezing_start(null) ->> 'lezing')::bigint;
+      perform public.mt_uitstappen_bijwerken(n, '[]'::jsonb, null, null);
+      perform pg_sleep(1.5);
+    end $$;
+    commit;`);
+  await new Promise((klaar) => setTimeout(klaar, 500));
+  const gestart = await voer("authenticator", `
+    begin;
+    select set_config('request.jwt.claims', '${JSON.stringify({ sub: x, role: "authenticated", aal: "aal2", session_id: x })}', true);
+    set local role authenticated;
+    select public.mt_schooljaar_bevestigen('2026-2027');
+    commit;`);
+  const gelezen = await leest;
+  const lezingen = await voer("supabase_admin", `select coalesce(string_agg(stand || ':' || coalesce(reden, ''), ', ' order by nummer), 'geen') from mt_intern.lezingen;`);
+  const jaarNa = await voer("supabase_admin", `select stand from public.schooljaren where schooljaar = '2026-2027';`);
+  const opruimen4 = await voer("supabase_admin", `delete from mt_intern.lezingen;`);
+  if (gelezen.code !== 0) return "de lezing tijdens de start van een schooljaar mislukte: " + gelezen.fout;
+  if (gestart.code !== 0) return "een schooljaar starten terwijl een lezing bezig is, mislukte: " + gestart.fout;
+  if (opruimen4.code !== 0) return "het opruimen na de start van een schooljaar mislukte: " + opruimen4.fout;
+  if (jaarNa.uit.trim() !== "lopend") return "na de start is het schooljaar niet lopend: " + jaarNa.uit.trim();
+  if (lezingen.uit.trim() !== "afgebroken:een nieuw schooljaar is gestart") {
+    return "een schooljaar starten terwijl een lezing bezig is: de lezing is niet afgebroken (" + lezingen.uit.trim() + ")";
+  }
   return null;
 }
 

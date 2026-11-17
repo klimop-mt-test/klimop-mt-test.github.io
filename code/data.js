@@ -1,4 +1,4 @@
-// MT · data.js · versie 0.8.0
+// MT · data.js · versie 0.9.0
 // De verbinding met de eigen databank (17.1, 17.8). De schermen praten enkel via dit bestand met
 // Supabase (regel 3). De publishable key gaat enkel als apikey mee; Authorization enkel met het
 // toegangsbewijs van een aangemelde gebruiker (design system 1.13).
@@ -9,10 +9,11 @@
 // Sinds stap 3: de serverfunctie voor de uitstappen (B212). Sinds 0.8.0 leest enkel die serverfunctie de
 // uitstappentool: de pagina maakt zelf geen verbinding meer met dat project (review 2).
 // Sinds 0.8.0 leest de MT een tabel op haar sleutel, bladzijde na bladzijde, en sorteert ze in de browser.
+// Sinds stap 4: een rij toevoegen aan een beheertabel of ze wijzigen, voor een beheerder (Instellingen).
 
 import { ACCOUNTFUNCTIE, UITSTAPFUNCTIE } from "./config.js";
 
-export const VERSIE = "0.8.0";
+export const VERSIE = "0.9.0";
 
 /** Zoals de REST-laag van de andere tools: na 12 seconden zonder antwoord is het een fout. */
 const WACHTTIJD = 12000;
@@ -359,4 +360,110 @@ export async function lees(tabel, { kolommen, waar = {}, volgorde, sleutel = ["i
   }
   if (uit.onvolledig) return mislukt("fout", ONVOLLEDIG, 0);
   return { ok: true, gegevens: sorteer(uit.rijen, volgorde) };
+}
+
+// ---------- In een beheertabel schrijven (17.8, stap 4) ----------
+// Een beheerder schrijft rechtstreeks in de beheertabellen. Wat mag, beslist de databank: de regels per
+// rij (RLS), de rechten per kolom en haar bewaking (sql/002_databank.sql). De pagina vraagt altijd de
+// rij terug zoals ze bewaard is: het scherm toont wat in de databank staat, niet wat het stuurde.
+// Een wijziging gaat altijd naar één rij, aangewezen met haar sleutel: zonder sleutel vertrekt er niets.
+
+const NIET_BEVESTIGD = "De databank bevestigde niet wat ze bewaarde. Kijk het na.";
+
+/** Een waarde die in een rij of een filter mag staan. */
+const isWaarde = (w) => w === null || typeof w === "string" || typeof w === "boolean" || (typeof w === "number" && Number.isFinite(w));
+
+/** Een rij voor een schrijfvraag: minstens één kolom, met gewone namen en eenvoudige waarden. */
+function isRij(rij) {
+  return rij !== null && typeof rij === "object" && !Array.isArray(rij) && Object.keys(rij).length > 0 &&
+    Object.entries(rij).every(([kolom, w]) => NAAM.test(kolom) && isWaarde(w));
+}
+
+/** Een sleutel wijst één rij aan: elke kolom heeft een waarde. */
+function isSleutel(sleutel) {
+  return isRij(sleutel) && Object.values(sleutel).every((w) => w !== null && w !== "");
+}
+
+const zijnKolommen = (kolommen) => Array.isArray(kolommen) && kolommen.length > 0 && kolommen.every((kolom) => NAAM.test(kolom));
+
+/** De filters van een schrijfvraag: elke kolom is gelijk aan haar waarde; null is leeg. */
+function filters(waar) {
+  return Object.entries(waar).map(([kolom, w]) => kolom + (w === null ? "=is.null" : "=eq." + encodeURIComponent(String(w))));
+}
+
+/** Wat er scheelt als de databank een schrijfvraag weigert. */
+function schrijfFout(antwoord) {
+  // Geen antwoord: de wijziging kan toch bewaard zijn. Het scherm leest dan opnieuw wat er staat.
+  if (antwoord.status === 0) {
+    return mislukt("verbinding", "De MT kreeg geen antwoord van de databank: het is niet zeker of dit bewaard is. Kijk het na.", 0, { onbekend: true });
+  }
+  const g = antwoord.gegevens && typeof antwoord.gegevens === "object" ? antwoord.gegevens : {};
+  const code = typeof g.code === "string" ? g.code : "";
+  const tekst = typeof g.message === "string" && g.message.startsWith("MT: ") ? g.message.slice(4) : null;
+  if (Object.prototype.hasOwnProperty.call(SOORT_PER_CODE, code)) return mislukt(SOORT_PER_CODE[code], tekst, antwoord.status);
+  if (code === "55P03" || code === "57014") return mislukt("fout", "De databank is even bezet. Probeer het over enkele seconden opnieuw.", antwoord.status);
+  // De rij bestaat al: iemand was sneller.
+  if (code === "23505") return mislukt("gewijzigd", "Dit bestaat al: iemand maakte het intussen aan. Kijk het opnieuw na.", antwoord.status);
+  // Een waarde buiten de grenzen van de databank, een verplicht veld dat leeg is, of iets dat niet bestaat.
+  if (["23514", "23502", "23503", "22P02", "22003"].includes(code)) return mislukt("kan_niet", "De databank weigert deze waarde.", antwoord.status);
+  if (antwoord.status === 401) return mislukt("sessie", null, 401);
+  if (antwoord.status === 403) return mislukt("rechten", null, 403);
+  if (antwoord.status === 404 || code === "42703" || code === "42P01") {
+    return mislukt("ontbreekt", "De databank is nog niet bijgewerkt: het laatste SQL-script is nog niet uitgevoerd.", antwoord.status);
+  }
+  return mislukt("fout", null, antwoord.status);
+}
+
+/** De rijen uit het antwoord op een schrijfvraag, of null als het geen rijen zijn. */
+function rijenUit(gegevens) {
+  const rijen = Array.isArray(gegevens) ? gegevens : gegevens === null || gegevens === undefined ? [] : [gegevens];
+  return rijen.every((rij) => rij !== null && typeof rij === "object" && !Array.isArray(rij)) ? rijen : null;
+}
+
+/**
+ * Voegt één rij toe aan een beheertabel, als wie aangemeld is.
+ *   rij       { kolom: waarde }: enkel deze kolommen gaan mee; de rest krijgt de standaard van de databank
+ *   kolommen  de kolommen die terugkomen
+ * Geeft { ok: true, gegevens } met de rij zoals ze nu in de databank staat.
+ */
+export async function voegToe(tabel, rij, { kolommen }) {
+  if (!NAAM.test(String(tabel)) || !isRij(rij) || !zijnKolommen(kolommen)) return mislukt("oproep", null, 0);
+  const token = await tokenBron();
+  if (!token) return mislukt("sessie", null, 0);
+  const antwoord = await roep("/rest/v1/" + tabel + "?columns=" + Object.keys(rij).join(",") + "&select=" + kolommen.join(","),
+    { methode: "POST", lichaam: rij, token, extra: { Prefer: "return=representation" } });
+  if (!antwoord.ok) return schrijfFout(antwoord);
+  const rijen = rijenUit(antwoord.gegevens);
+  if (rijen === null || rijen.length !== 1) return mislukt("fout", NIET_BEVESTIGD, antwoord.status, { onbekend: true });
+  return { ok: true, gegevens: rijen[0] };
+}
+
+/**
+ * Wijzigt één rij van een beheertabel, als wie aangemeld is.
+ *   sleutel    { kolom: waarde }: de sleutel van de rij (haar primary key), bv. { schooljaar: "2026-2027" }
+ *   wijziging  { kolom: waarde }: enkel deze kolommen wijzigen
+ *   als        { kolom: waarde }: enkel als de rij dit nog heeft, bv. { stand: "in_te_vullen" }
+ *   kolommen   de kolommen die terugkomen
+ * Geeft { ok: true, gegevens } met de rij zoals ze nu in de databank staat.
+ * Wijzigde er geen rij, dan bestaat ze niet meer of mag ze zo niet meer wijzigen: "gewijzigd". Tenzij de
+ * aanmelding niet meer in orde is: zonder rechten wijzigt de databank ook niets, en dat is iets anders.
+ */
+export async function wijzig(tabel, { sleutel, wijziging, als = {}, kolommen }) {
+  if (!NAAM.test(String(tabel)) || !isSleutel(sleutel) || !isRij(wijziging) || !zijnKolommen(kolommen)) return mislukt("oproep", null, 0);
+  if (Object.keys(als).length > 0 && !isRij(als)) return mislukt("oproep", null, 0);
+  const token = await tokenBron();
+  if (!token) return mislukt("sessie", null, 0);
+  // De sleutel staat altijd in de vraag: wat "als" over dezelfde kolom zegt, telt niet.
+  const waar = filters({ ...als, ...sleutel });
+  const antwoord = await roep("/rest/v1/" + tabel + "?" + waar.join("&") + "&select=" + kolommen.join(","),
+    { methode: "PATCH", lichaam: wijziging, token, extra: { Prefer: "return=representation" } });
+  if (!antwoord.ok) return schrijfFout(antwoord);
+  const rijen = rijenUit(antwoord.gegevens);
+  if (rijen === null) return mislukt("fout", NIET_BEVESTIGD, antwoord.status, { onbekend: true });
+  if (rijen.length === 1) return { ok: true, gegevens: rijen[0] };
+  // Een sleutel wijst één rij aan. Meer dan één is een fout in de pagina of in de databank: dat zegt de MT luid.
+  if (rijen.length > 1) return mislukt("fout", "De databank wijzigde meer dan één rij. Dat hoort niet te kunnen: meld het aan de beheerder van de MT.", antwoord.status);
+  const nog = await rpc("mt_mijn_account");
+  if (!nog.ok) return nog;
+  return mislukt("gewijzigd", null, antwoord.status);
 }

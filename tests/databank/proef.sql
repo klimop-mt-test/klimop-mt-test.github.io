@@ -2531,6 +2531,125 @@ select proef.zeker('rem: staan ook die er weer, dan is de taak opgelost en noemt
   and (proef.uit('lang2') #> '{uitkomst,verdwenen}') = '[]'::jsonb
   and (select count(*) from public.taken where soort = 'veel_verdwenen' and stand = 'open') = 0);
 
+-- ---------- Stap 4a: een schooljaar starten, en de lezingen (script 007) ----------
+-- De beheerder maakt het schooljaar na het lopende aan en vult het in, zoals de pagina: rechtstreeks in
+-- de tabel. Daarna start hij het. Twee keer na elkaar: eens met een verse lezing, eens met een lezing
+-- die nog bezig is.
+create function proef.volgend_jaar() returns text language sql stable as $$
+  select (left(s.schooljaar, 4)::integer + 1) || '-' || (left(s.schooljaar, 4)::integer + 2) from public.schooljaren s where s.stand = 'lopend'
+$$;
+-- Zoals de pagina het doet (code/instellingen.js): eerst enkel het schooljaar, dan veld na veld, telkens enkel zolang
+-- het schooljaar in te vullen is, en met de rij terug. Een veld leegmaken kan; de stand zelf schrijven kan niet.
+create function proef.jaar_klaar(p_jaar text) returns text language plpgsql as $$
+declare
+  v text;
+  v_terug constant text := ' returning schooljaar, stand, plafond_kleuter_cent, plafond_lager_cent, marge_kleuter_cent, marge_lager_cent, '
+    || 'gratis_zwemjaar_leerjaar, gratis_zwemjaar_toegang_aangerekend, gratis_zwemjaar_bus, prijs_per_kind_afwezigen';
+  v_stap text;
+begin
+  v := proef.fout(format('insert into public.schooljaren (schooljaar, prijs_per_kind_afwezigen) values (%L, false)', p_jaar) || v_terug, 'authenticated', true);
+  if v <> 'geen fout, 1 rijen' then return 'aanmaken: ' || v; end if;
+  foreach v_stap in array array['plafond_kleuter_cent = 9900', 'plafond_kleuter_cent = null', 'plafond_kleuter_cent = 5500', 'plafond_lager_cent = 11000',
+                                'marge_kleuter_cent = 0', 'marge_lager_cent = 400', 'gratis_zwemjaar_leerjaar = 1', 'gratis_zwemjaar_toegang_aangerekend = true',
+                                'gratis_zwemjaar_toegang_aangerekend = false', $s$gratis_zwemjaar_bus = 'geen'$s$, $s$gratis_zwemjaar_bus = 'school'$s$]
+  loop
+    v := proef.fout(format($s$update public.schooljaren set %s where schooljaar = %L and stand = 'in_te_vullen'$s$, v_stap, p_jaar) || v_terug, 'authenticated', true);
+    if v <> 'geen fout, 1 rijen' then return v_stap || ': ' || v; end if;
+  end loop;
+  v := proef.fout(format($s$update public.schooljaren set stand = 'lopend' where schooljaar = %L$s$, p_jaar), 'authenticated', true);
+  if v not like '42501%' then return 'de stand schrijven: ' || v; end if;
+  v := proef.fout(format('update public.schooljaren set plafond_lager_cent = -1 where schooljaar = %L', p_jaar), 'authenticated', true);
+  if v not like '23514%' then return 'een negatief plafond: ' || v; end if;
+  v := proef.fout(format('update public.schooljaren set gratis_zwemjaar_leerjaar = 7 where schooljaar = %L', p_jaar), 'authenticated', true);
+  if v not like '23514%' then return 'een leerjaar dat niet bestaat: ' || v; end if;
+  perform proef.zet_vandaag(make_date(left(p_jaar, 4)::integer, 7, 1));
+  return 'klaar';
+end $$;
+create function proef.bevestig_jaar(p_jaar text) returns jsonb language sql as $$
+  select proef.json(format('select public.mt_schooljaar_bevestigen(%L)', p_jaar))
+$$;
+create function proef.open_lijsten(p_jaar text) returns integer language sql stable as $$
+  select count(*)::integer from public.klaslijsten l join public.activiteiten a on a.id = l.activiteit_id
+   where l.schooljaar = p_jaar and l.stand = 'open' and not l.vervallen
+     and (a.soort = 'beurt' or (a.bron_stand = 'actief' and a.bron_plan = 'bevestigd'))
+$$;
+
+select proef.aangemeld(proef.id(1));
+select proef.doe('s4-vorig1', to_jsonb((select schooljaar from public.schooljaren where stand = 'lopend')));
+select proef.doe('s4-jaar1', to_jsonb(proef.volgend_jaar()));
+select proef.doe('s4-klaar1', to_jsonb(proef.jaar_klaar(proef.uit('s4-jaar1') #>> '{}')));
+select proef.zeker('schooljaar starten: de beheerder maakt het volgende schooljaar aan en vult het in, rechtstreeks in de tabel',
+  proef.uit('s4-klaar1') #>> '{}' = 'klaar'
+  and (select stand = 'in_te_vullen' and plafond_lager_cent = 11000 and marge_kleuter_cent = 0 and gratis_zwemjaar_leerjaar = 1
+              and gratis_zwemjaar_bus = 'school' and not prijs_per_kind_afwezigen
+         from public.schooljaren where schooljaar = proef.uit('s4-jaar1') #>> '{}'));
+
+-- Een uitstap met twee klassen in het lopende schooljaar: twee open lijsten. Eén ervan vervalt: ze telt straks
+-- niet mee bij "nog open in het vorige schooljaar".
+select proef.doe('s4-lijsten', proef.lees(
+  proef.r2('u-s4-lijst', '2026-03-01T10:00:00Z', false,
+           array(select k.naam from public.klassen k
+                  where k.schooljaar = (select schooljaar from public.schooljaren where stand = 'lopend') and k.actief order by k.naam limit 2)),
+  proef.alle_ids() || array['u-s4-lijst']));
+update public.klaslijsten l set vervallen = true
+ where l.activiteit_id = proef.act('u-s4-lijst')
+   and l.klas_id = (select x.klas_id from public.klaslijsten x where x.activiteit_id = proef.act('u-s4-lijst') order by x.klas_id limit 1);
+
+-- 1. Met een verse lezing: binnen de halve minuut krijgt een nieuwe vraag haar uitkomst. Na de start niet meer.
+select proef.doe('s4-open1', to_jsonb(proef.open_lijsten(proef.uit('s4-vorig1') #>> '{}')));
+select proef.doe('s4-vers', proef.lezing('[]'::jsonb, proef.alle_ids()));
+select proef.doe('s4-recent', proef.start());
+select proef.zeker('schooljaar starten: vooraf is de laatste lezing vers: een nieuwe vraag krijgt haar uitkomst',
+  proef.uit('s4-vers') ? 'uitkomst' and proef.uit('s4-recent') ->> 'wat' = 'recent');
+select proef.doe('s4-start1', proef.bevestig_jaar(proef.uit('s4-jaar1') #>> '{}'));
+select proef.zeker('schooljaar starten: het antwoord noemt het schooljaar, het vorige en zijn open lijsten',
+  proef.uit('s4-start1') ->> 'schooljaar' = proef.uit('s4-jaar1') #>> '{}'
+  and proef.uit('s4-start1') ->> 'vorig' = proef.uit('s4-vorig1') #>> '{}'
+  and (proef.uit('s4-start1') ->> 'open_lijsten_vorig')::integer = (proef.uit('s4-open1') #>> '{}')::integer
+  and (proef.uit('s4-open1') #>> '{}')::integer = 1 and proef.uit('s4-lijsten') @> '{"nieuw": 1}'::jsonb
+  and (select count(*) = 2 and count(*) filter (where l.vervallen) = 1 from public.klaslijsten l where l.activiteit_id = proef.act('u-s4-lijst'))
+  and proef.uit('s4-start1') -> 'klassen' = 'null'::jsonb);
+select proef.zeker('schooljaar starten: het nieuwe is lopend, het vorige voorbij maar nog open',
+  (select stand = 'lopend' and lopend_sinds is not null from public.schooljaren where schooljaar = proef.uit('s4-jaar1') #>> '{}')
+  and (select stand = 'voorbij' from public.schooljaren where schooljaar = proef.uit('s4-vorig1') #>> '{}'));
+select proef.doe('s4-na1', proef.start());
+select proef.zeker('schooljaar starten: wat de laatste lezing toonde, is van vóór de start: de volgende vraag leest meteen opnieuw',
+  proef.uit('s4-na1') ->> 'wat' = 'nieuw');
+
+-- 2. Met een lezing die nog bezig is: de lezing van hierboven. Ze gaf al één deel door; haar volgende deel
+--    komt na de start, en schrijft niets meer.
+select proef.doe('s4-jaar2', to_jsonb(proef.volgend_jaar()));
+select proef.doe('s4-klaar2', to_jsonb(proef.jaar_klaar(proef.uit('s4-jaar2') #>> '{}')));
+select proef.doe('s4-deel1', proef.deel((proef.uit('s4-na1') ->> 'lezing')::bigint, jsonb_build_array(proef.r2('u-s4-voor'))));
+select proef.doe('s4-start2', proef.bevestig_jaar(proef.uit('s4-jaar2') #>> '{}'));
+select proef.zeker('schooljaar starten: een lezing die nog bezig was, is afgebroken, met de reden',
+  proef.uit('s4-klaar2') #>> '{}' = 'klaar' and proef.uit('s4-deel1') @> '{"nieuw": 1}'::jsonb
+  and proef.uit('s4-start2') ->> 'schooljaar' = proef.uit('s4-jaar2') #>> '{}'
+  and (select stand = 'afgebroken' and reden = 'een nieuw schooljaar is gestart'
+         from mt_intern.lezingen where nummer = (proef.uit('s4-na1') ->> 'lezing')::bigint));
+select proef.doe('s4-deel2', proef.deel((proef.uit('s4-na1') ->> 'lezing')::bigint, jsonb_build_array(proef.r2('u-s4-na')), proef.alle_ids()));
+select proef.zeker('schooljaar starten: haar volgende deel schrijft niets meer (MT409)',
+  proef.uit('s4-deel2') ->> 'fout' = 'MT409' and not exists (select 1 from public.activiteiten where uitstap_id = 'u-s4-na'));
+select proef.doe('s4-na2', proef.start());
+select proef.zeker('schooljaar starten: de volgende vraag start meteen een nieuwe lezing, zonder een minuut te wachten',
+  proef.uit('s4-na2') ->> 'wat' = 'nieuw');
+select proef.doe('s4-stop', proef.stop((proef.uit('s4-na2') ->> 'lezing')::bigint));
+
+-- Een ouder schooljaar starten kan niet meer; wat nog in te vullen is, wist de beheerder weer.
+select proef.doe('s4-oud', to_jsonb((left((select min(schooljaar) from public.schooljaren), 4)::integer - 1) || '-'
+                                     || left((select min(schooljaar) from public.schooljaren), 4)));
+select proef.doe('s4-oudmaken', to_jsonb(proef.fout(format('insert into public.schooljaren (schooljaar, plafond_kleuter_cent, plafond_lager_cent, '
+  || 'marge_kleuter_cent, marge_lager_cent) values (%L, 5500, 11000, 0, 0)', proef.uit('s4-oud') #>> '{}'), 'authenticated', true)));
+select proef.doe('s4-oudstart', proef.bevestig_jaar(proef.uit('s4-oud') #>> '{}'));
+select proef.zeker('schooljaar starten: een ouder schooljaar starten kan niet: er is al een later gestart',
+  proef.uit('s4-oudmaken') #>> '{}' = 'geen fout, 1 rijen'
+  and proef.uit('s4-oudstart') ->> 'fout' = 'MT422' and proef.uit('s4-oudstart') ->> 'tekst' like '%later schooljaar%'
+  and (select stand = 'in_te_vullen' from public.schooljaren where schooljaar = proef.uit('s4-oud') #>> '{}'));
+select proef.doe('s4-oudweg', to_jsonb(proef.fout(format('delete from public.schooljaren where schooljaar = %L', proef.uit('s4-oud') #>> '{}'), 'authenticated', true)));
+select proef.zeker('schooljaar starten: een schooljaar dat nog in te vullen is, wist de beheerder weer',
+  proef.uit('s4-oudweg') #>> '{}' = 'geen fout, 1 rijen'
+  and not exists (select 1 from public.schooljaren where schooljaar = proef.uit('s4-oud') #>> '{}'));
+
 -- ---------- De uitslag ----------
 
 \o

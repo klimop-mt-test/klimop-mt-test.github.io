@@ -1,4 +1,4 @@
-// MT · uitstappentool.js · versie 0.8.0
+// MT · uitstappentool.js · versie 0.9.0
 // Wat de MT uit de uitstappentool leest, op de startpagina van de testversie (stap 3; hoofdstuk 4, B212).
 //
 // De pagina leest de uitstappentool niet zelf (review 2). Bij het openen vraagt ze de serverfunctie
@@ -21,7 +21,7 @@ import * as data from "./data.js";
 import { REKENVERSIE } from "./rekenen.js";
 import { datumEnUur, html, knopBezig, meld, vraag, zet } from "./ui.js";
 
-export const VERSIE = "0.8.0";
+export const VERSIE = "0.9.0";
 
 /** Na zoveel minuten leest de MT opnieuw als je naar het tabblad terugkeert. */
 const OPNIEUW_NA_MINUTEN = 10;
@@ -153,7 +153,7 @@ export function regels({ functie, rol, schooljaar }) {
     uit.push({
       soort: "info",
       tekst: beheerder
-        ? "In de MT is er nog geen lopend schooljaar: de uitstappen wachten tot het aangemaakt is. Dat kan in Instellingen, vanaf de volgende versie van de MT."
+        ? "In de MT is er nog geen lopend schooljaar: de uitstappen wachten tot het aangemaakt en gestart is. Dat doe je in Instellingen."
         : "De MT volgt de uitstappen zodra de beheerder het schooljaar aanmaakt.",
     });
   } else {
@@ -310,6 +310,36 @@ export function opnieuwNodig({ verborgen, gevraagdOp, nu }) {
   return !verborgen && gevraagdOp !== null && nu - gevraagdOp > OPNIEUW_NA_MINUTEN * 60000;
 }
 
+/**
+ * Eén tegelijk, en daarna nog één keer als er intussen opnieuw om gevraagd is: wat al onderweg was, kan van
+ * vóór die vraag zijn, bv. van vóór de start van een schooljaar. Geeft een functie; elke oproep ervan geeft
+ * de belofte van de lopende reeks, met de uitkomst van het laatste werk. Geeft werk() false terug, dan
+ * volgt er niets meer.
+ */
+export function eenTegelijk(werk) {
+  let lopend = null;
+  let nogEens = false;
+  return () => {
+    if (lopend) {
+      nogEens = true;
+      return lopend;
+    }
+    lopend = (async () => {
+      let uit;
+      let verder = true;
+      while (verder) {
+        nogEens = false;
+        uit = await werk();
+        verder = uit !== false && nogEens;
+      }
+      return uit;
+    })().finally(() => {
+      lopend = null;
+    });
+    return lopend;
+  };
+}
+
 // ---------- Het blok op de startpagina ----------
 
 /**
@@ -317,6 +347,9 @@ export function opnieuwNodig({ verborgen, gevraagdOp, nu }) {
  *   deel      het element van het blok
  *   account   wie aangemeld is (mt_mijn_account)
  *   herstart  de pagina opnieuw laden: het aanmeldscherm vraagt dan wat nodig is
+ * Geeft { herlaad }: herlaad() vraagt een nieuwe lezing en geeft een belofte met het antwoord van de
+ * serverfunctie, of false als de pagina herlaadt. account wordt bij elke tekening opnieuw gelezen: wijzigt
+ * het lopende schooljaar, dan volgt het blok.
  */
 export function start({ deel, account, herstart }) {
   // functie: het laatste antwoord. goed: het laatste antwoord met een lezing erin: dat blijft staan als een latere vraag geen lezing meebrengt.
@@ -379,8 +412,8 @@ export function start({ deel, account, herstart }) {
       </div>`);
   }
 
-  async function ververs() {
-    if (s.bezig) return;
+  /** Eén vraag aan de serverfunctie. Geeft haar antwoord, of false als de pagina herlaadt. */
+  async function eenLezing() {
     s.bezig = true;
     teken();
     // De serverfunctie leest de uitstappentool, werkt de MT bij, en zegt wat ze las.
@@ -390,14 +423,19 @@ export function start({ deel, account, herstart }) {
     // wel, dan herlaadt de pagina niet: anders zou ze blijven herladen. De melding zegt dan wat er scheelt.
     if (moetNavragen(functie) && moetHerstarten(functie, await data.rpc("mt_mijn_account"))) {
       herstart();
-      return;
+      return false;
     }
     s.bezig = false;
     s.functie = functie;
     if (functie.ok && functie.gegevens && functie.gegevens.uitstappen) s.goed = functie;
     s.gevraagdOp = Date.now();
     teken();
+    return functie;
   }
+
+  // Eén vraag tegelijk. Vraagt iets om een nieuwe lezing terwijl de MT nog leest, bv. net na de start van
+  // een schooljaar, dan leest ze daarna nog één keer.
+  const ververs = eenTegelijk(eenLezing);
 
   /** De beheerder bevestigt dat de tegengehouden uitstappen echt weg zijn (B225). Daarna leest de MT opnieuw. */
   async function bevestigVerdwenen(doel) {

@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { UITSTAPFUNCTIE_VERSIE } from "../code/config.js";
 import { REKENVERSIE } from "../code/rekenen.js";
-import { moetHerstarten, moetNavragen, onbekendeKlassen, opnieuwNodig, overzichtUit, regels, vraagVerdwenen, zinGelezen, zinNietInDeMT } from "../code/uitstappentool.js";
+import { eenTegelijk, moetHerstarten, moetNavragen, onbekendeKlassen, opnieuwNodig, overzichtUit, regels, vraagVerdwenen, zinGelezen, zinNietInDeMT } from "../code/uitstappentool.js";
 import { CODE, lees } from "./hulp.js";
 
 const TELLERS = { nieuw: 0, gewijzigd: 0, weg: 0, ongewijzigd: 0, ongeldig: 0, buiten: 0, geen: 0, gesloten: 0, niet_gevonden: 0, tegengehouden: 0 };
@@ -41,7 +41,7 @@ Deno.test("de startpagina: een beheerder ziet hoe lang de lezing duurde", () => 
 Deno.test("de startpagina: zonder schooljaar wachten de uitstappen, en dat is geen fout", () => {
   const functie = gelukt({ uitstappen: { buiten: 131, geen: 12 }, klassen: { ok: false, melding: "er is nog geen lopend schooljaar" } });
   assert.deepEqual(voor("beheerder", functie, null),
-    [{ soort: "info", tekst: "In de MT is er nog geen lopend schooljaar: de uitstappen wachten tot het aangemaakt is. Dat kan in Instellingen, vanaf de volgende versie van de MT." }]);
+    [{ soort: "info", tekst: "In de MT is er nog geen lopend schooljaar: de uitstappen wachten tot het aangemaakt en gestart is. Dat doe je in Instellingen." }]);
   // Wie geen beheerder is, leest wat het voor hem betekent; geen bouwstap in de zin (review 2: R2-15).
   assert.deepEqual(voor("leerkracht", functie, null), [{ soort: "info", tekst: "De MT volgt de uitstappen zodra de beheerder het schooljaar aanmaakt." }]);
   assert.deepEqual(teksten(voor("leerkracht", gelukt({ uitstappen: { geen: 3 } }))), ["De MT volgt nog geen uitstappen van 2026-2027."]);
@@ -307,4 +307,52 @@ Deno.test("terug op het tabblad leest de MT opnieuw na tien minuten, niet eerder
   assert.equal(opnieuwNodig({ verborgen: false, gevraagdOp: toen, nu: toen + 11000 }), false, "tien seconden is geen tien minuten");
   assert.equal(opnieuwNodig({ verborgen: true, gevraagdOp: toen, nu: toen + 60 * minuut }), false);
   assert.equal(opnieuwNodig({ verborgen: false, gevraagdOp: null, nu: toen }), false, "vóór de eerste vraag is er niets opnieuw te lezen");
+});
+
+// ---------- Eén lezing tegelijk (stap 4a) ----------
+
+/** Werk dat de test zelf laat aflopen: elke oproep wacht tot de test hem een uitkomst geeft. */
+function werkOpAfroep() {
+  const open = [];
+  const werk = () => new Promise((klaar) => open.push(klaar));
+  return { werk, open, rond: (uitkomst) => open.shift()(uitkomst) };
+}
+const even = () => new Promise((klaar) => setTimeout(klaar, 0));
+
+Deno.test("één lezing tegelijk: wie vraagt terwijl de MT nog leest, krijgt daarna nog één lezing, en die uitkomst", async () => {
+  const w = werkOpAfroep();
+  let gestart = 0;
+  const vraag = eenTegelijk(() => (gestart++, w.werk()));
+  const eerste = vraag();
+  // Twee vragen terwijl de eerste lezing loopt, bv. net na de start van een schooljaar: samen één extra lezing.
+  const tweede = vraag();
+  const derde = vraag();
+  assert.equal(gestart, 1, "een tweede lezing startte terwijl de eerste nog liep");
+  assert.equal(tweede, eerste);
+  assert.equal(derde, eerste);
+  w.rond("van vóór de vraag");
+  await even();
+  assert.equal(gestart, 2, "na de eerste lezing volgde er geen tweede");
+  w.rond("van na de vraag");
+  assert.equal(await eerste, "van na de vraag");
+  assert.equal(gestart, 2, "er volgde een lezing waar niemand om vroeg");
+  // Daarna begint een nieuwe vraag gewoon opnieuw, met één lezing.
+  const later = vraag();
+  assert.notEqual(later, eerste);
+  w.rond("later");
+  assert.equal(await later, "later");
+  assert.equal(gestart, 3);
+});
+
+Deno.test("één lezing tegelijk: herlaadt de pagina, dan volgt er geen lezing meer", async () => {
+  const w = werkOpAfroep();
+  let gestart = 0;
+  const vraag = eenTegelijk(() => (gestart++, w.werk()));
+  const eerste = vraag();
+  vraag();
+  // false: de aanmelding is niet meer in orde, de pagina herlaadt.
+  w.rond(false);
+  assert.equal(await eerste, false);
+  await even();
+  assert.equal(gestart, 1, "na het herladen startte er nog een lezing");
 });

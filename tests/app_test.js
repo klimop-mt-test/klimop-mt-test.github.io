@@ -195,3 +195,26 @@ Deno.test("app.js gebruikt voor het afmelden na stilte de beslissingen van auth.
   assert.match(bron, /setInterval\(kijk, auth\.STILTE_NAKIJKEN_MS\)/);
   assert.doesNotMatch(bron, /teLangStil|15000|\b5000\b/, "app.js heeft weer een eigen regel of een eigen getal voor de stilte");
 });
+
+// ---------- Wie de tabbladen en Instellingen krijgt (stap 4a, B165) ----------
+
+Deno.test("de start: de tabbladen, Instellingen, Gebruikers en de Rekentest zijn er enkel voor een beheerder; het schooljaar in de kop voor iedereen", () => {
+  const bron = lees(CODE + "app.js");
+  // De pagina beslist niets over rechten: dat doet de databank. Wel wat ze toont: wie geen beheerder is, krijgt geen
+  // tabbladen en geen scherm dat hij toch niet mag gebruiken.
+  const blok = bron.indexOf('\n  if (account.rol === "beheerder") {\n');
+  assert.ok(blok > 0, "app.js beslist niet meer zo wie de tabbladen en Instellingen krijgt");
+  assert.equal(bron.split('account.rol === "beheerder"').length, 2, "de rol wordt op meer dan één plaats nagekeken");
+  const einde = bron.indexOf("\n  }\n}\n", blok);
+  assert.ok(einde > blok, "het deel voor de beheerder is niet meer het laatste van de start");
+  for (const start of ["ui.zetTabbladen(", "instellingen.start(", "gebruikers.start(", "rekentest.start("]) {
+    assert.equal(bron.split(start).length, 2, start + " staat er niet precies één keer");
+    const plaats = bron.indexOf(start);
+    assert.ok(plaats > blok && plaats < einde, start + " staat niet binnen het deel voor de beheerder");
+  }
+  // Het schooljaar in de kop is er voor elke rol: vóór dat deel.
+  for (const start of ["ui.zetSchooljaar(", "  leesJaren();"]) {
+    const plaats = bron.indexOf(start);
+    assert.ok(plaats > 0 && plaats < blok, start + " staat niet vóór het deel voor de beheerder");
+  }
+});

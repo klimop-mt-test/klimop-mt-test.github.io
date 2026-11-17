@@ -1,4 +1,4 @@
-// MT · gebruikers.js · versie 0.8.0
+// MT · gebruikers.js · versie 0.9.0
 // Het scherm Gebruikers (3, 15, B165, B170; canvas: bord "Gebruikers"): iedereen die kan aanmelden,
 // met de rol, de klassen per schooljaar en de stand van het account. Enkel voor een beheerder.
 //
@@ -14,8 +14,9 @@
 import * as data from "./data.js";
 import { ACCOUNTFUNCTIE, ACCOUNTFUNCTIE_VERSIE, SCHOOLDOMEIN } from "./config.js";
 import { bevries, datumEnUur, html, knopBezig, meld, venster, vraag, zet } from "./ui.js";
+import { kiesJaar, openJaren } from "./schooljaar.js";
 
-export const VERSIE = "0.8.0";
+export const VERSIE = "0.9.0";
 
 // ---------- Zonder browser te testen ----------
 
@@ -182,8 +183,10 @@ const gelijk = (a, b) => a.size === b.size && [...a].every((x) => b.has(x));
  *   ik        het id van wie aangemeld is: het eigen account wijzig je hier niet (17.4)
  *   terug     terug naar waar je vandaan kwam
  *   herstart  de aanmelding is niet meer in orde: de pagina herlaadt en vraagt wat nodig is
+ *   jaar      geeft het schooljaar dat in de kop van de pagina gekozen is, of niets
+ * Geeft { open, jaarGewijzigd }. Het scherm laadt pas bij open().
  */
-export function start({ deel, ik, terug, herstart }) {
+export function start({ deel, ik, jaar, terug, herstart }) {
   const s = {
     laden: true, fout: null, gebruikers: [], schooljaren: [], klassen: [], toewijzingen: [], operaties: new Map(), afwijkend: new Set(),
     rijen: [], jaren: [], jaar: null, zoek: "", rol: "alle", toestand: "alle", uren: 48,
@@ -192,7 +195,7 @@ export function start({ deel, ik, terug, herstart }) {
   const q = (kiezer) => deel.querySelector(kiezer);
 
   zet(deel, html`
-    <button class="btn-link" type="button" data-doe="terug">← Terug</button>
+    <button class="btn-link" type="button" data-doe="terug">← Instellingen</button>
     <div class="page-head big mt-gbkop">
       <div>
         <h2 tabindex="-1">Gebruikers</h2>
@@ -217,9 +220,8 @@ export function start({ deel, ik, terug, herstart }) {
     else if (doe === "toevoegen") openToevoegen();
     else if (doe === "wijzig") openWijzigen(knop.dataset.id);
     else if (doe === "neem") neemOver(knop.dataset.id, knop);
-    else if (doe === "rol" || doe === "toestand" || doe === "jaar") {
+    else if (doe === "rol" || doe === "toestand") {
       s[doe] = knop.dataset.waarde;
-      if (doe === "jaar") herreken();
       tekenFilters();
       tekenLijst();
     }
@@ -276,12 +278,10 @@ export function start({ deel, ik, terug, herstart }) {
     s.klassen = k.gegevens;
     s.toewijzingen = t.gegevens;
     s.afwijkend = new Set(Array.isArray(afw.gegevens) ? afw.gegevens : []);
-    // De schooljaren waarin klassen te koppelen zijn: het lopende, en een vorig dat nog open staat.
-    s.jaren = sj.gegevens.filter((j) => j.stand === "lopend" || j.stand === "voorbij").sort((a, b) => (a.schooljaar < b.schooljaar ? 1 : -1));
-    if (!s.jaren.some((j) => j.schooljaar === s.jaar)) {
-      const lopend = s.jaren.find((j) => j.stand === "lopend") || s.jaren[0];
-      s.jaar = lopend ? lopend.schooljaar : null;
-    }
+    // De schooljaren waarin klassen te koppelen zijn: het lopende, en een vorig dat nog open staat. Welk van
+    // beide het scherm toont, kiest de gebruiker in de kop van de pagina (B164).
+    s.jaren = openJaren(sj.gegevens);
+    s.jaar = kiesJaar(s.jaren, jaar());
     const open = s.gebruikers.map((x) => x.open_operatie).filter(Boolean);
     s.operaties = new Map();
     if (open.length) {
@@ -315,8 +315,7 @@ export function start({ deel, ik, terug, herstart }) {
       <span class="seg sm" role="group" aria-label="${label}">${opties.map(([waarde, tekst, aantal]) => html`<button type="button" class="${s[naam] === waarde ? "on" : ""}" aria-pressed="${s[naam] === waarde}" data-doe="${naam}" data-waarde="${waarde}">${tekst}${aantal === null ? null : html`<span class="c">${aantal}</span>`}</button>`)}</span>`;
     zet(q('[data-vak="filters"]'), html`
       ${groep("rol", "Rol", [["alle", "Iedereen", s.rijen.length], ["beheerder", "Beheerders", tel((r) => r.g.rol === "beheerder")], ["leerkracht", "Leerkrachten", tel((r) => r.g.rol === "leerkracht")], ["lezer", "Lezers", tel((r) => r.g.rol === "lezer")]])}
-      ${groep("toestand", "Toestand", [["alle", "Alle", null], ["koppelen", "Nog te koppelen", tel((r) => r.teKoppelen)], ["aandacht", "Account vraagt aandacht", tel((r) => r.toestand.aandacht || r.afwijkend)]])}
-      ${s.jaren.length > 1 ? groep("jaar", "Schooljaar", s.jaren.map((j) => [j.schooljaar, j.schooljaar + (j.stand === "voorbij" ? " · nog open" : ""), null])) : null}`);
+      ${groep("toestand", "Toestand", [["alle", "Alle", null], ["koppelen", "Nog te koppelen", tel((r) => r.teKoppelen)], ["aandacht", "Account vraagt aandacht", tel((r) => r.toestand.aandacht || r.afwijkend)]])}`);
   }
 
   function klassenCel(r) {
@@ -878,9 +877,28 @@ export function start({ deel, ik, terug, herstart }) {
     await laad();
   }
 
+  /** Het schooljaar in de kop wijzigde: dezelfde gegevens, voor het andere schooljaar. */
+  function jaarGewijzigd() {
+    if (s.laden || s.fout) return;
+    s.jaar = kiesJaar(s.jaren, jaar());
+    herreken();
+    tekenFilters();
+    tekenLijst();
+  }
+
+  /**
+   * Het scherm openen vanuit Instellingen: vers laden, en meteen het venster voor wat daar gevraagd werd.
+   *   actie  niets, { toevoegen: true } of { wijzig: id van een gebruiker }
+   */
+  async function open(actie) {
+    await laad();
+    if (s.laden || s.fout || !actie) return;
+    if (actie.toevoegen) openToevoegen();
+    else if (actie.wijzig && s.rijen.some((r) => r.g.id === actie.wijzig && !r.eigen)) openWijzigen(actie.wijzig);
+  }
+
   tekenFilters();
-  laad();
   const titel = q("h2");
   if (titel) titel.focus();
-  return { herlaad: laad };
+  return { open, jaarGewijzigd };
 }

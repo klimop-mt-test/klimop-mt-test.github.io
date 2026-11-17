@@ -1,19 +1,21 @@
-// MT · app.js · versie 0.8.0
+// MT · app.js · versie 0.9.0
 // De start (17.1): nooit in een andere pagina, dezelfde versie in alle bestanden, de omgeving uit
 // het adres, de verbinding met de databank, en sinds stap 2 de aanmelding, het afmelden (17.2) en
 // de weg naar het scherm Gebruikers. Sinds stap 3 ook de vraag aan de serverfunctie om de uitstappentool
-// te lezen bij het openen (B212) en de weg naar de rekentest. Later de tabbladen en de keuzebalk scherp
-// of minder scherp (B75).
+// te lezen bij het openen (B212) en de weg naar de rekentest. Sinds stap 4 de tabbladen, het schooljaar
+// in de kop (B164) en Instellingen, met daarin de weg naar Gebruikers en de Rekentest (B165). Later de
+// keuzebalk scherp of minder scherp (B75).
 //
 // app.js laadt de andere bestanden zelf, zodat een ontbrekend bestand een duidelijke melding geeft.
 // Wijkt een versie af, door een vergeten bestand of een oude kopie in de browser (GitHub Pages laat
 // die tot tien minuten toe), dan haalt de MT de bestanden één keer vers op en herlaadt. Lukt dat
 // niet, of kan ze niet onthouden dat ze het al probeerde, dan start ze niet en zegt ze wat je kan doen.
 
-export const VERSIE = "0.8.0";
+export const VERSIE = "0.9.0";
 
 /** De bestanden die de MT laadt. Elk heeft export const VERSIE; een test bewaakt deze lijst. */
-const MODULES = ["./config.js", "./ui.js", "./data.js", "./auth.js", "./aanmelden.js", "./gebruikers.js", "./rekenen.js", "./adapter.js", "./rekentest.js", "./uitstappentool.js"];
+const MODULES = ["./config.js", "./ui.js", "./data.js", "./auth.js", "./aanmelden.js", "./gebruikers.js", "./rekenen.js", "./adapter.js", "./rekentest.js", "./uitstappentool.js",
+  "./schooljaar.js", "./instellingen.js"];
 
 /**
  * Alles wat vers opgehaald wordt als de versies verschillen. De adressen gelden ten opzichte van
@@ -50,7 +52,7 @@ async function start() {
     return;
   }
   vergeetHerstel();
-  const [config, ui, data, auth, aanmelden, gebruikers, , , rekentest, uitstappentool] = geladen;
+  const [config, ui, data, auth, aanmelden, gebruikers, , , rekentest, uitstappentool, schooljaar, instellingen] = geladen;
 
   // 3. De omgeving volgt uit het adres; een onbekend adres start niet (17.1).
   const omgeving = config.omgeving(location.hostname);
@@ -104,41 +106,91 @@ async function start() {
   const account = uit.account;
   if (account.instellingen && account.instellingen.afmelden_na_minuten > 0) stilMinuten = account.instellingen.afmelden_na_minuten;
   ui.zetGebruiker(account.naam + ", " + account.rol, () => afmelden());
-  ui.toonAccount({
+  const toonAccount = () => ui.toonAccount({
     account,
     blijft: auth.blijft(),
     codeOp: uit.niveau.codeOp,
     melding: uit.nietBlijven ? "\"Aangemeld blijven\" staat uit voor jouw rol: de MT meldt je af als je een tijd niets doet." : null,
   });
+  toonAccount();
   ui.toon("start");
+  const herstart = () => location.reload();
 
   // 9. De uitstappentool (stap 3, B212): bij het openen vraagt de pagina de serverfunctie om de MT bij te
   //    werken, voor elke rol, en toont ze wat die functie las. Een leerkracht hoeft zo nooit te wachten
   //    tot de beheerder de MT opende. De pagina leest de uitstappentool niet zelf (review 2).
-  uitstappentool.start({ deel: document.getElementById("kaartUitstappentool"), account, herstart: () => location.reload() });
+  const bron = uitstappentool.start({ deel: document.getElementById("kaartUitstappentool"), account, herstart });
 
-  // 10. De rekentest en het scherm Gebruikers, enkel voor een beheerder (B165). Is de aanmelding daar
-  //     niet meer in orde, bv. een code van meer dan twee weken, dan herlaadt de pagina en vraagt ze
-  //     wat nodig is.
+  // 10. Het schooljaar in de kop (B132, B164), voor elke rol: het lopende, of de keuze als er nog een vorig
+  //     schooljaar open staat. Het account kent het lopende schooljaar al; de lijst van de open schooljaren
+  //     volgt meteen. Lukt dat lezen niet, dan blijft staan wat er stond.
+  const schermen = { instellingen: null, gebruikers: null, rekentest: null };
+  const kop = { jaren: account.schooljaar ? [{ schooljaar: account.schooljaar, stand: "lopend" }] : [], gekozen: account.schooljaar || null };
+  const toonJaar = () => ui.zetSchooljaar({ jaren: kop.jaren, gekozen: kop.gekozen, opKies: kiesJaar });
+  function kiesJaar(jaar) {
+    if (jaar === kop.gekozen || !kop.jaren.some((j) => j.schooljaar === jaar)) return;
+    kop.gekozen = jaar;
+    toonJaar();
+    for (const scherm of [schermen.instellingen, schermen.gebruikers]) if (scherm) scherm.jaarGewijzigd();
+  }
+  const leesJaren = async () => {
+    const r = await data.lees("schooljaren", { kolommen: ["schooljaar", "stand"], volgorde: ["schooljaar"], sleutel: ["schooljaar"] });
+    if (!r.ok) return false;
+    kop.jaren = schooljaar.openJaren(r.gegevens);
+    kop.gekozen = schooljaar.kiesJaar(kop.jaren, kop.gekozen);
+    toonJaar();
+    return true;
+  };
+  toonJaar();
+  leesJaren();
+
+  // 11. Instellingen, met daarin de weg naar Gebruikers en de Rekentest: enkel voor een beheerder (B165).
+  //     Wie maar één onderdeel heeft, krijgt geen tabbladen. Is de aanmelding niet meer in orde, bv. een
+  //     code van meer dan twee weken, dan herlaadt de pagina en vraagt ze wat nodig is.
   if (account.rol === "beheerder") {
-    let test = null;
-    ui.toonNaarRekentest(() => {
-      ui.toon("rekentest");
-      if (!test) test = rekentest.start({ deel: document.getElementById("view-rekentest"), terug: () => ui.toon("start") });
-    });
-    let scherm = null;
-    ui.toonNaarGebruikers(() => {
-      ui.toon("gebruikers");
-      if (scherm) scherm.herlaad();
-      else {
-        scherm = gebruikers.start({
-          deel: document.getElementById("view-gebruikers"),
-          ik: account.id,
-          terug: () => ui.toon("start"),
-          herstart: () => location.reload(),
-        });
+    const deel = (naam) => document.getElementById("view-" + naam);
+    // Na de start van een schooljaar: het account en de kop kennen het nieuwe lopende schooljaar, en de MT
+    // leest de uitstappentool opnieuw. De belofte geeft het antwoord van die lezing.
+    const opGestart = async () => {
+      const nieuw = await data.rpc("mt_mijn_account");
+      if (nieuw.ok && nieuw.gegevens && typeof nieuw.gegevens === "object") {
+        Object.assign(account, nieuw.gegevens);
+        toonAccount();
       }
-    });
+      kop.gekozen = account.schooljaar || null;
+      if (!(await leesJaren()) && account.schooljaar) {
+        // De lijst lezen lukte niet: de kop toont dan toch al het nieuwe lopende schooljaar.
+        kop.jaren = [{ schooljaar: account.schooljaar, stand: "lopend" }];
+        toonJaar();
+      }
+      return bron.herlaad();
+    };
+    const naar = (naam, actie = null) => {
+      ui.toon(naam === "overzicht" ? "start" : naam);
+      ui.zetTabblad(naam === "overzicht" ? "overzicht" : "instellingen");
+      if (naam === "instellingen") {
+        if (schermen.instellingen) schermen.instellingen.herlaad();
+        else {
+          schermen.instellingen = instellingen.start({
+            deel: deel("instellingen"),
+            ik: account.id,
+            jaar: () => kop.gekozen,
+            naarGebruikers: (wat) => naar("gebruikers", wat),
+            naarRekentest: () => naar("rekentest"),
+            opGestart,
+            herstart,
+          });
+        }
+      } else if (naam === "gebruikers") {
+        if (!schermen.gebruikers) {
+          schermen.gebruikers = gebruikers.start({ deel: deel("gebruikers"), ik: account.id, jaar: () => kop.gekozen, terug: () => naar("instellingen"), herstart });
+        }
+        schermen.gebruikers.open(actie);
+      } else if (naam === "rekentest" && !schermen.rekentest) {
+        schermen.rekentest = rekentest.start({ deel: deel("rekentest"), terug: () => naar("instellingen") });
+      }
+    };
+    ui.zetTabbladen([{ naam: "overzicht", tekst: "Overzicht" }, { naam: "instellingen", tekst: "Instellingen" }], "overzicht", (naam) => naar(naam));
   }
 }
 

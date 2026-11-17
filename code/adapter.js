@@ -1,4 +1,4 @@
-// MT · adapter.js · versie 0.8.0
+// MT · adapter.js · versie 0.9.0
 // De uitstappentool lezen (hoofdstuk 4 en 17.1 van de huidige stand; T1, V20, V22, B212).
 //
 // Regel 2 (17.1): dit bestand leest de uitstappentool enkel over het netwerk, met de functie die het
@@ -21,7 +21,7 @@
 // Wat een uitstap kost, vertaalt kostenVoorMT() naar het rekencontract (1.3): een gedeelde kost, een
 // prijs per kind, of onbekend. Een prijs die ontbreekt, is nooit € 0 (B80).
 
-export const VERSIE = "0.8.0";
+export const VERSIE = "0.9.0";
 
 // ==== adapter: gedeeld met de serverfunctie ====
 

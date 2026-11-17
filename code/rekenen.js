@@ -1,4 +1,4 @@
-// MT · rekenen.js · versie 0.8.0
+// MT · rekenen.js · versie 0.9.0
 // Het rekencontract (mt-rekencontract.md, versie 20): hoe de MT rekent, tot op de cent. De nummers in
 // dit bestand, zoals 1.16 of G5e, verwijzen naar dat contract.
 //
@@ -19,7 +19,7 @@
 // een bedrag (1.8). De facturatie, de voorschotten en het rapport volgen in fase 2; minder scherp en
 // de credits van een meerdaagse in fase 3.
 
-export const VERSIE = "0.8.0";
+export const VERSIE = "0.9.0";
 
 /**
  * De rekenversie (17.1): gaat omhoog bij elke wijziging aan dit bestand of aan adapter.js die een

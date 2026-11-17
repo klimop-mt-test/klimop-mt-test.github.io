@@ -263,13 +263,13 @@ export const FOUTEN = [
     nieuw: "  v_rol := mt_intern.eis_rol('beheerder', 'leerkracht');\n  select s.stand into v_stand from public.schooljaren s where s.schooljaar = p_schooljaar;",
   },
   {
-    script: "003_functies.sql",
+    script: "007_schooljaar.sql",
     naam: "een schooljaar bevestigen vóór 1 juli",
     oud: "  if mt_intern.vandaag() < make_date(left(p_schooljaar, 4)::integer, 7, 1) then",
     nieuw: "  if false then",
   },
   {
-    script: "003_functies.sql",
+    script: "007_schooljaar.sql",
     naam: "een leerkracht bevestigt een schooljaar",
     oud: "  v_rol := mt_intern.eis_rol('beheerder');\n  perform pg_advisory_xact_lock(hashtext('mt_schooljaar'));",
     nieuw: "  v_rol := mt_intern.eis_rol('beheerder', 'leerkracht');\n  perform pg_advisory_xact_lock(hashtext('mt_schooljaar'));",
@@ -1273,6 +1273,55 @@ export const FOUTEN = [
     oud: "  select * into v_act from public.activiteiten a where a.uitstap_id = v_id for no key update;",
     nieuw: "  select * into v_act from public.activiteiten a where a.uitstap_id = v_id for update;",
     wedloop: true,
+  },
+  {
+    script: "007_schooljaar.sql",
+    naam: "na de start van een schooljaar geldt de laatste lezing nog als recent",
+    oud: "  update mt_intern.lezingen l set verouderd = true where l.stand = 'klaar' and not l.verouderd;\n  return jsonb_build_object('schooljaar', p_schooljaar,",
+    nieuw: "  return jsonb_build_object('schooljaar', p_schooljaar,",
+  },
+  {
+    script: "007_schooljaar.sql",
+    naam: "een lezing die bezig is bij de start van een schooljaar, loopt gewoon door",
+    oud: "  update mt_intern.lezingen l set stand = 'afgebroken', reden = 'een nieuw schooljaar is gestart' where l.stand = 'bezig';",
+    nieuw: "  null;",
+  },
+  {
+    script: "007_schooljaar.sql",
+    naam: "een schooljaar starten wacht niet op een deel van een lezing dat bezig is",
+    oud: "  perform pg_advisory_xact_lock(hashtext('mt_schooljaar'));\n  perform pg_advisory_xact_lock(hashtext('mt_uitstappen_bijwerken'));\n  select * into v_jaar",
+    nieuw: "  perform pg_advisory_xact_lock(hashtext('mt_schooljaar'));\n  perform pg_try_advisory_xact_lock(hashtext('mt_uitstappen_bijwerken'));\n  select * into v_jaar",
+    wedloop: true,
+  },
+  {
+    script: "007_schooljaar.sql",
+    naam: "een schooljaar starten zonder plafonds of marges",
+    oud: "  if v_jaar.plafond_kleuter_cent is null or v_jaar.plafond_lager_cent is null\n     or v_jaar.marge_kleuter_cent is null or v_jaar.marge_lager_cent is null",
+    nieuw: "  if false",
+  },
+  {
+    script: "007_schooljaar.sql",
+    naam: "een ouder schooljaar starten terwijl er al een later gestart is",
+    oud: "  if exists (select 1 from public.schooljaren s where s.schooljaar > p_schooljaar and s.stand <> 'in_te_vullen') then",
+    nieuw: "  if false then",
+  },
+  {
+    script: "007_schooljaar.sql",
+    naam: "een schooljaar twee keer starten",
+    oud: "  if not found or v_jaar.stand <> 'in_te_vullen' then\n    raise exception 'MT: dit schooljaar staat niet (meer) op \"in te vullen\"' using errcode = 'MT409';",
+    nieuw: "  if not found then\n    raise exception 'MT: dit schooljaar staat niet (meer) op \"in te vullen\"' using errcode = 'MT409';",
+  },
+  {
+    script: "007_schooljaar.sql",
+    naam: "bij de start telt de MT ook de vervallen lijsten van het vorige schooljaar als open",
+    oud: "     where l.schooljaar = v_vorig and l.stand = 'open' and not l.vervallen\n       and (a.soort = 'beurt'",
+    nieuw: "     where l.schooljaar = v_vorig and l.stand = 'open'\n       and (a.soort = 'beurt'",
+  },
+  {
+    script: "007_schooljaar.sql",
+    naam: "het slot van de lezingen komt pas na de eerste vergrendelde rij",
+    oud: "  perform pg_advisory_xact_lock(hashtext('mt_uitstappen_bijwerken'));\n  select * into v_jaar from public.schooljaren s where s.schooljaar = p_schooljaar for update;",
+    nieuw: "  select * into v_jaar from public.schooljaren s where s.schooljaar = p_schooljaar for update;\n  perform pg_advisory_xact_lock(hashtext('mt_uitstappen_bijwerken'));",
   },
 ];
 

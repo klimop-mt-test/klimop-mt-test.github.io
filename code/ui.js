@@ -1,13 +1,14 @@
-// MT · ui.js · versie 0.8.0
+// MT · ui.js · versie 0.9.0
 // De gedeelde onderdelen van de schermen (17.1). Het enige bestand dat HTML in de pagina zet
 // (regel 4, 17.10). Een scherm stelt zijn opbouw samen met het sjabloon html`…`: elke ingevoegde
 // waarde wordt daarin standaard tekst, zodat een naam nooit als opmaak op het scherm komt. Enkel
 // zet() hieronder schrijft die opbouw weg. Wat geen sjabloon is, wordt altijd gewone tekst.
 // Sinds stap 2 ook de onderdelen van de pagina, wie aangemeld is, de vensters, de beslissingsvraag en
-// de meldingen onderaan. Sinds stap 3 de bedragen (euro). Later komen hier de statuslabels, het
-// ballonnetje van de materialentool, de filterbalk en de tabellen.
+// de meldingen onderaan. Sinds stap 3 de bedragen (euro). Sinds stap 4 de tabbladen, het schooljaar in
+// de kop, en een bedrag lezen dat iemand intikt. Later komen hier de statuslabels, het ballonnetje van
+// de materialentool, de filterbalk en de tabellen.
 
-export const VERSIE = "0.8.0";
+export const VERSIE = "0.9.0";
 
 // ---------- Tekst en opmaak ----------
 
@@ -58,6 +59,28 @@ const EURO = new Intl.NumberFormat("nl-BE", { minimumFractionDigits: 2, maximumF
 export function euro(cent) {
   if (typeof cent !== "number" || !Number.isFinite(cent)) return "";
   return (cent < 0 ? "− " : "") + "€ " + EURO.format(Math.abs(cent) / 100);
+}
+
+/** Een bedrag in centen voor een invoerveld, zonder het euroteken: 5500 wordt "55,00". Leeg voor geen bedrag. */
+export function bedragTekst(cent) {
+  if (typeof cent !== "number" || !Number.isFinite(cent)) return "";
+  return EURO.format(cent / 100);
+}
+
+/**
+ * Leest een bedrag in euro dat iemand intikte: "55", "55,5", "55,50", "€ 1.250,00" of "55.50". Geeft
+ * { ok: true, cent } met het bedrag in centen, { ok: true, cent: null } voor een leeg veld, of
+ * { ok: false } als het geen bedrag is: negatief, meer dan twee decimalen, of iets anders dan een getal.
+ * Een punt met precies drie cijfers erna scheidt duizendtallen, zoals in 1.250. Met één of twee cijfers
+ * erna is het een decimaalteken, zoals op een rekenmachine. Het veld toont daarna wat de MT las.
+ */
+export function bedragUit(tekst) {
+  const t = String(tekst ?? "").replace(/[\s\u00a0\u202f€]/g, "");
+  if (t === "") return { ok: true, cent: null };
+  const m = /^(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d{1,2}))?$/.exec(t) || /^(\d+)\.(\d{1,2})$/.exec(t);
+  if (!m) return { ok: false };
+  const cent = Number(m[1].replace(/\./g, "")) * 100 + (m[2] ? Number(m[2].padEnd(2, "0")) : 0);
+  return Number.isSafeInteger(cent) ? { ok: true, cent } : { ok: false };
 }
 
 /** Schrijft inhoud in een element: opmaak uit html`…` als HTML, al de rest als gewone tekst. */
@@ -131,6 +154,8 @@ export function datumEnUur(ms) {
 export function toonAccount({ account, blijft, codeOp, melding }) {
   const instellingen = account.instellingen || {};
   $("startTitel").textContent = "Dag " + account.naam;
+  $("startIntro").textContent = "De MT is in opbouw. Hier zie je wie je bent, wanneer de MT je afmeldt en wat ze uit de uitstappentool leest."
+    + (account.rol === "beheerder" ? " Het schooljaar, de gebruikers en de Rekentest staan in Instellingen." : "");
   $("standNaam").textContent = account.naam + " · " + account.email;
   $("standRol").textContent = ROLLEN[account.rol] || account.rol;
   const klassen = Array.isArray(account.klassen) ? account.klassen.map((k) => k.naam) : [];
@@ -151,16 +176,66 @@ export function toonAccount({ account, blijft, codeOp, melding }) {
   vak.hidden = !melding;
 }
 
-/** De kaart naar het scherm Gebruikers, enkel voor een beheerder. Later bereik je het scherm via Instellingen (B165). */
-export function toonNaarGebruikers(actie) {
-  $("kaartGebruikers").hidden = false;
-  $("naarGebruikers").addEventListener("click", actie);
+/**
+ * De tabbladen onder de kleurbalk (design system: nav.tabs). Met minder dan twee onderdelen staat er geen
+ * balk: wie maar één onderdeel heeft, hoeft niet te kiezen.
+ *   tabs    [{ naam, tekst }]
+ *   actief  de naam van het onderdeel dat open staat
+ *   opKies  bij een klik: opKies(naam)
+ */
+export function zetTabbladen(tabs, actief, opKies) {
+  const nav = $("tabbladen");
+  nav.hidden = tabs.length < 2;
+  zet(nav, html`${tabs.map((tab) => html`<button class="tab" type="button" data-tab="${tab.naam}">${tab.tekst}</button>`)}`);
+  nav.onclick = (gebeurtenis) => {
+    const knop = gebeurtenis.target instanceof Element ? gebeurtenis.target.closest("[data-tab]") : null;
+    if (knop && opKies) opKies(knop.dataset.tab);
+  };
+  zetTabblad(actief);
 }
 
-/** De kaart naar de rekentest (17.1), enkel voor een beheerder. */
-export function toonNaarRekentest(actie) {
-  $("kaartRekentest").hidden = false;
-  $("naarRekentest").addEventListener("click", actie);
+/** Welk tabblad open staat. */
+export function zetTabblad(actief) {
+  for (const knop of $("tabbladen").querySelectorAll("[data-tab]")) {
+    const aan = knop.dataset.tab === actief;
+    knop.classList.toggle("active", aan);
+    if (aan) knop.setAttribute("aria-current", "page");
+    else knop.removeAttribute("aria-current");
+  }
+}
+
+/**
+ * Het schooljaar in de kop (B132, B164). Staat er één schooljaar open, dan een label. Staan er meer open,
+ * dan een compacte schakelaar, en bij een schooljaar dat voorbij is een band onder de kop: zo is altijd
+ * duidelijk waarin je werkt. Zonder open schooljaar staat er niets.
+ *   jaren    [{ schooljaar, stand }], het lopende eerst (schooljaar.js: openJaren)
+ *   gekozen  het schooljaar waarin de schermen werken
+ *   opKies   bij een klik op de schakelaar: opKies(schooljaar)
+ */
+export function zetSchooljaar({ jaren, gekozen, opKies }) {
+  const vak = $("kopJaar");
+  const band = $("band");
+  const huidig = jaren.find((jaar) => jaar.schooljaar === gekozen) || null;
+  vak.hidden = !huidig;
+  band.hidden = !huidig || huidig.stand !== "voorbij";
+  vak.onclick = null;
+  if (!huidig) {
+    vak.replaceChildren();
+    band.replaceChildren();
+    return;
+  }
+  if (jaren.length === 1) {
+    vak.className = "year-badge";
+    vak.textContent = "Schooljaar " + huidig.schooljaar;
+  } else {
+    vak.className = "mt-kopjaar";
+    zet(vak, html`<span class="mt-kopjaar-label" id="kopJaarLabel">Schooljaar</span><span class="seg sm" role="group" aria-labelledby="kopJaarLabel">${jaren.map((jaar) => html`<button type="button" class="${jaar.schooljaar === gekozen ? "on" : ""}" aria-pressed="${String(jaar.schooljaar === gekozen)}" data-jaar="${jaar.schooljaar}">${jaar.stand === "voorbij" ? html`<span class="pt" aria-hidden="true"></span>${jaar.schooljaar + " · nog open"}` : jaar.schooljaar}</button>`)}</span>`);
+    vak.onclick = (gebeurtenis) => {
+      const knop = gebeurtenis.target instanceof Element ? gebeurtenis.target.closest("[data-jaar]") : null;
+      if (knop && opKies) opKies(knop.dataset.jaar);
+    };
+  }
+  zet(band, html`<b>${"Je werkt in schooljaar " + huidig.schooljaar + ", dat nog open staat."}</b> ${"Wat hier verandert, geldt enkel voor " + huidig.schooljaar + "."}`);
 }
 
 const STANDEN = {
@@ -267,6 +342,7 @@ export function venster({ titel, sub = null, breed = "", inhoud, voet = null, ma
 /**
  * De beslissingsvraag (design system): een bewuste "Ja, …" en een "Nee, …" die de focus heeft. Enter en
  * Escape kiezen "Nee". Geeft true bij ja. Vragen komen na elkaar: de tweede wacht op de eerste.
+ * tekst is gewone tekst, of opmaak uit html`…`, bv. met een zin die extra opvalt.
  */
 let vorigeVraag = Promise.resolve();
 export function vraag({ titel, tekst, ja, nee }) {

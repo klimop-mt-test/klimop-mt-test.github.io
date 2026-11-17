@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <!--
-  MT · index.html · versie 0.8.0
+  MT · index.html · versie 0.9.0
   Maximumfactuur-tool van GO! basisschool Klim-Op (Vilvoorde).
   De opbouw van de pagina, zonder scriptcode: alle code staat in de modules (17.1, 17.10).
   Scripts enkel van het eigen adres; verbindingen enkel met het eigen adres en het eigen project
@@ -15,7 +15,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://ayszixqnuktogzjtreyy.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex, nofollow">
-<meta name="mt-versie" content="0.8.0">
+<meta name="mt-versie" content="0.9.0">
 <title>Maximumfactuur · GO! basisschool Klim-Op</title>
 <link rel="stylesheet" href="opmaak/mt.css">
 <!-- supabase-js 2.116.0, het officiële bestand, uit de eigen repository (B158). Enkel auth.js gebruikt het.
@@ -38,13 +38,16 @@
       <div class="status">
         <span id="omgeving" class="mt-omgeving" hidden></span>
         <button id="conn" class="conn busy" type="button" title="De MT controleert de verbinding." aria-label="De MT controleert de verbinding."><span class="dot"></span><span id="connTxt">verbinden…</span></button>
+        <span id="kopJaar" class="year-badge" hidden></span>
         <span id="nietAangemeld" class="mt-niet">Niet aangemeld</span>
         <button id="wie" class="admin-toggle on" type="button" hidden></button>
       </div>
     </div>
     <div class="stripe"></div>
+    <nav class="tabs" id="tabbladen" aria-label="Onderdelen" hidden></nav>
   </div>
 </header>
+<p id="band" class="mt-band" role="status" hidden></p>
 
 <main>
 <section class="view active" id="view-aanmelden" aria-label="Aanmelden">
@@ -68,7 +71,7 @@
   <div class="page-head big">
     <div>
       <h2 id="startTitel">Je bent aangemeld</h2>
-      <p>De MT is in opbouw. Deze testversie toont wie je bent, wanneer de MT je afmeldt en wat ze uit de uitstappentool leest; een beheerder beheert hier ook de gebruikers.</p>
+      <p id="startIntro">De MT is in opbouw. Hier zie je wie je bent, wanneer de MT je afmeldt en wat ze uit de uitstappentool leest.</p>
     </div>
   </div>
   <p id="startMelding" class="finfo mt-melding" hidden></p>
@@ -84,21 +87,9 @@
     </dl>
   </div>
   <section class="card mt-lijst mt-bron" id="kaartUitstappentool" aria-labelledby="bronTitel" hidden></section>
-  <div class="card mt-naar" id="kaartRekentest" hidden>
-    <div>
-      <h3>Rekentest</h3>
-      <p>De testgevallen van het rekencontract, uitgerekend door deze browser: het verwachte bedrag naast het berekende.</p>
-    </div>
-    <button class="btn btn-primary" type="button" id="naarRekentest">Rekentest</button>
-  </div>
-  <div class="card mt-naar" id="kaartGebruikers" hidden>
-    <div>
-      <h3>Gebruikers</h3>
-      <p>Wie kan aanmelden, met de rol en de klassen per schooljaar. Later bereik je dit scherm via Instellingen.</p>
-    </div>
-    <button class="btn btn-primary" type="button" id="naarGebruikers">Gebruikers</button>
-  </div>
 </section>
+
+<section class="view" id="view-instellingen" aria-label="Instellingen"></section>
 
 <section class="view" id="view-gebruikers" aria-label="Gebruikers"></section>
 
