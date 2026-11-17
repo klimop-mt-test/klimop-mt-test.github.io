@@ -1,15 +1,16 @@
-// MT · app.js · versie 0.7.1
+// MT · app.js · versie 0.8.0
 // De start (17.1): nooit in een andere pagina, dezelfde versie in alle bestanden, de omgeving uit
 // het adres, de verbinding met de databank, en sinds stap 2 de aanmelding, het afmelden (17.2) en
-// de weg naar het scherm Gebruikers. Sinds stap 3 ook het lezen van de uitstappentool bij het openen
-// (B212) en de weg naar de rekentest. Later de tabbladen en de keuzebalk scherp of minder scherp (B75).
+// de weg naar het scherm Gebruikers. Sinds stap 3 ook de vraag aan de serverfunctie om de uitstappentool
+// te lezen bij het openen (B212) en de weg naar de rekentest. Later de tabbladen en de keuzebalk scherp
+// of minder scherp (B75).
 //
 // app.js laadt de andere bestanden zelf, zodat een ontbrekend bestand een duidelijke melding geeft.
 // Wijkt een versie af, door een vergeten bestand of een oude kopie in de browser (GitHub Pages laat
 // die tot tien minuten toe), dan haalt de MT de bestanden één keer vers op en herlaadt. Lukt dat
-// niet, dan start ze niet en zegt ze wat je kan doen.
+// niet, of kan ze niet onthouden dat ze het al probeerde, dan start ze niet en zegt ze wat je kan doen.
 
-export const VERSIE = "0.7.1";
+export const VERSIE = "0.8.0";
 
 /** De bestanden die de MT laadt. Elk heeft export const VERSIE; een test bewaakt deze lijst. */
 const MODULES = ["./config.js", "./ui.js", "./data.js", "./auth.js", "./aanmelden.js", "./gebruikers.js", "./rekenen.js", "./adapter.js", "./rekentest.js", "./uitstappentool.js"];
@@ -112,8 +113,8 @@ async function start() {
   ui.toon("start");
 
   // 9. De uitstappentool (stap 3, B212): bij het openen vraagt de pagina de serverfunctie om de MT bij te
-  //    werken, voor elke rol, en toont ze wat ze zelf leest. Een leerkracht hoeft zo nooit te wachten
-  //    tot de beheerder de MT opende.
+  //    werken, voor elke rol, en toont ze wat die functie las. Een leerkracht hoeft zo nooit te wachten
+  //    tot de beheerder de MT opende. De pagina leest de uitstappentool niet zelf (review 2).
   uitstappentool.start({ deel: document.getElementById("kaartUitstappentool"), account, herstart: () => location.reload() });
 
   // 10. De rekentest en het scherm Gebruikers, enkel voor een beheerder (B165). Is de aanmelding daar
@@ -152,31 +153,31 @@ async function controleer(ui, data) {
  * (B26). Niet enkel met een klok: ook bij het terugkeren naar het tabblad of na de slaapstand (T5).
  */
 function bewaakStilte(auth, afmelden) {
-  let laatst = 0;
-  // Synchroon, zonder netwerk en zonder te wachten: tussen het nakijken en het besluit kan zo niets schuiven.
-  const teLang = () => auth.heeftSessie() && !auth.blijft() && auth.teLangStil(auth.laatste(), Date.now(), stilMinuten);
+  let vorige = 0;
+  // Wat de MT weet, synchroon, zonder netwerk en zonder te wachten: tussen het nakijken en het besluit kan zo
+  // niets schuiven. De beslissingen zelf staan in auth.js, als zuivere functies met hun tests (review 2: R2-19).
+  const stand = (nu) => ({ sessie: auth.heeftSessie(), blijft: auth.blijft(), laatste: auth.laatste(), nu, minuten: stilMinuten });
   const stilAf = () => afmelden("Je bent afgemeld: er gebeurde " + stilMinuten + " minuten niets.");
   const activiteit = () => {
     const nu = Date.now();
-    if (nu - laatst < 15000) return;
-    // Eerst de vorige termijn. Wie na een lange pauze terugkomt, bv. na de slaapstand, verlengt de sessie
-    // niet met zijn eerste klik of toets: die klik meldt af (review 1, I4).
-    if (teLang()) {
-      stilAf();
-      return;
+    // Wie na een lange pauze terugkomt, bv. na de slaapstand, verlengt de sessie niet met zijn eerste klik
+    // of toets: die klik meldt af (review 1, I4).
+    const wat = auth.bijActiviteit({ ...stand(nu), vorige });
+    if (wat === "afmelden") stilAf();
+    else if (wat === "verlengen") {
+      vorige = nu;
+      auth.raak(nu);
     }
-    laatst = nu;
-    auth.raak(nu);
   };
   for (const soort of ["pointerdown", "keydown", "scroll", "touchstart"]) {
     window.addEventListener(soort, activiteit, { passive: true, capture: true });
   }
   const kijk = () => {
-    if (teLang()) stilAf();
+    if (auth.stilteVoorbij(stand(Date.now()))) stilAf();
   };
   // Om de vijf seconden: zo staat een scherm na de slaapstand hoogstens even open (B218). De controle
   // leest enkel de opslag van de browser, zonder netwerk.
-  setInterval(kijk, 5000);
+  setInterval(kijk, auth.STILTE_NAKIJKEN_MS);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) kijk();
   });
@@ -195,10 +196,12 @@ function versieVanCss() {
   return waarde.trim().replace(/^["']|["']$/g, "");
 }
 
-/** Haalt de bestanden één keer vers op en herlaadt; daarna geeft de MT het op. */
+/**
+ * Haalt de bestanden één keer vers op en herlaadt; daarna geeft de MT het op. Herladen doet ze enkel als ze
+ * kon bewaren dat ze het al probeerde: anders zou ze na elke herlading opnieuw beginnen (review 2: R10).
+ */
 async function herstel(reden) {
-  if (leesPogingen() < 1) {
-    bewaarPogingen(1);
+  if (leesPogingen() < 1 && bewaarPogingen(1)) {
     const adressen = [location.pathname, ...PAGINA];
     await Promise.allSettled(adressen.map((adres) => fetch(adres, { cache: "reload" })));
     location.reload();
@@ -208,7 +211,7 @@ async function herstel(reden) {
   stop(reden + " Vernieuw de pagina met Ctrl+F5. Blijft dit staan, laad dan alle bestanden van de MT opnieuw op in GitHub.");
 }
 
-/** Zonder browseropslag geen tweede poging: zo kan de MT nooit blijven herladen. */
+/** Zonder browseropslag geen poging: zo kan de MT nooit blijven herladen. */
 function leesPogingen() {
   try {
     return Number(sessionStorage.getItem(HERSTEL) || 0);
@@ -217,11 +220,16 @@ function leesPogingen() {
   }
 }
 
+/**
+ * Bewaart het aantal pogingen, en zegt of dat lukte: de waarde moet er echt staan. Een volle opslag
+ * weigert schrijven, maar laat lezen toe: dan is er niets bewaard, en herlaadt de MT niet.
+ */
 function bewaarPogingen(aantal) {
   try {
     sessionStorage.setItem(HERSTEL, String(aantal));
+    return sessionStorage.getItem(HERSTEL) === String(aantal);
   } catch {
-    // geen opslag: leesPogingen() geeft dan 1, en er komt geen tweede poging
+    return false;
   }
 }
 

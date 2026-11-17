@@ -4,17 +4,18 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <!--
-  MT · index.html · versie 0.7.1
+  MT · index.html · versie 0.8.0
   Maximumfactuur-tool van GO! basisschool Klim-Op (Vilvoorde).
   De opbouw van de pagina, zonder scriptcode: alle code staat in de modules (17.1, 17.10).
-  Scripts enkel van het eigen adres; verbindingen enkel met het eigen adres en Supabase.
-  Test en productie krijgen dezelfde bestanden: bij de livegang komt het adres van de productie
-  in connect-src erbij.
+  Scripts enkel van het eigen adres; verbindingen enkel met het eigen adres en het eigen project
+  van Supabase. De uitstappentool leest enkel de serverfunctie mt-uitstappen: de pagina mag er zelf
+  niet mee verbinden (review 2). Test en productie krijgen dezelfde bestanden: bij de livegang
+  komt het adres van de productie in connect-src erbij.
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://ayszixqnuktogzjtreyy.supabase.co https://vmvxawjfryaijkhhnnyr.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://ayszixqnuktogzjtreyy.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex, nofollow">
-<meta name="mt-versie" content="0.7.1">
+<meta name="mt-versie" content="0.8.0">
 <title>Maximumfactuur · GO! basisschool Klim-Op</title>
 <link rel="stylesheet" href="opmaak/mt.css">
 <!-- supabase-js 2.116.0, het officiële bestand, uit de eigen repository (B158). Enkel auth.js gebruikt het.

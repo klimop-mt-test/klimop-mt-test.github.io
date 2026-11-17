@@ -2,27 +2,26 @@
 // De serverfunctie voor de uitstappen (functies/mt-uitstappen), tegen een nagebootste Supabase en een
 // nagebootste uitstappentool. Er gaat niets over het netwerk. Wat de test bewaakt (17.4, B212):
 //   - de functie gebruikt dezelfde tekst als code/adapter.js, woord voor woord;
-//   - de secret key gaat enkel naar het eigen project, enkel voor mt_uitstappen_bijwerken, en staat
-//     nooit in een antwoord of in het logboek; naar de uitstappentool gaat enkel haar eigen
-//     publishable key, nooit de secret key en nooit het toegangsbewijs van de vrager;
+//   - de secret key gaat enkel naar het eigen project, enkel om een lezing te starten, door te geven en
+//     te stoppen, en staat nooit in een antwoord of in het logboek; naar de uitstappentool gaat enkel
+//     haar eigen publishable key, nooit de secret key en nooit het toegangsbewijs van de vrager;
 //   - wie mag vragen, beslist de databank, met het toegangsbewijs van de vrager zelf;
 //   - de klassen gaan vóór de uitstappen, en enkel bij een beheerder, met zijn eigen toegangsbewijs;
+//   - elke lezing krijgt een volgnummer vóór ze leest; één lezing tegelijk, en hoogstens één per dertig
+//     seconden (review 2);
 //   - de uitstappen gaan in delen, met de volledige lijst van id's bij het laatste deel;
 //   - lukt het lezen niet, of niet volledig, dan wijzigt er niets.
-// De databankfunctie zelf wordt nagekeken in tests/databank/proef.sql; hier staat een nabootsing die
-// sql/005_review1.sql volgt.
+// De databankfuncties zelf worden nagekeken in tests/databank/proef.sql, en de echte serverfunctie
+// tegen de echte databankfuncties in tests/databank_test.js. De nabootsing van hier staat in
+// tests/nabootsing.js; ze volgt sql/006_review2.sql.
 
 import assert from "node:assert/strict";
 import { REKENVERSIE } from "../code/rekenen.js";
 import { alleOmgevingen, omgeving, UITSTAPFUNCTIE, UITSTAPFUNCTIE_VERSIE, UITSTAPPENTOOL as BRON_IN_CONFIG } from "../code/config.js";
 import { bestaat, CODE, lees } from "./hulp.js";
+import { b64, GEHEIM, ID, nep, OORSPRONG, PUBLIEK, URL_MT } from "./nabootsing.js";
 import { maakBehandelaar, magNaarBron, PAGINA, UITSTAPPENTOOL, VERSIE } from "../functies/mt-uitstappen/index.ts";
 
-const URL_MT = "https://ayszixqnuktogzjtreyy.supabase.co";
-const OORSPRONG = PAGINA[URL_MT];
-const PUBLIEK = "sb_publishable_voorbeeld";
-const GEHEIM = ["sb", "secret", "enkelvoordetest"].join("_");
-const ID = (n) => "00000000-0000-4000-8000-" + String(n).padStart(12, "0");
 const FUNCTIE = "functies/" + UITSTAPFUNCTIE + "/index.ts";
 
 // ---------- De functie en de pagina gebruiken dezelfde tekst ----------
@@ -57,201 +56,7 @@ Deno.test("de serverfunctie: dezelfde projecten, dezelfde uitstappentool en deze
   }
 });
 
-// ---------- De nagebootste Supabase en de nagebootste uitstappentool ----------
-
-function b64(tekst) {
-  return btoa(tekst).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-const schooljaarVan = (datum) => {
-  const jaar = Number(datum.slice(0, 4));
-  return Number(datum.slice(5, 7)) >= 9 ? jaar + "-" + (jaar + 1) : jaar - 1 + "-" + jaar;
-};
-
-function nep() {
-  const s = {
-    nu: Date.parse("2026-11-16T08:00:00Z"),
-    /** Elke oproep duurt zo lang: om een traag netwerk na te bootsen. */
-    duur: 5,
-    oproepen: [],
-    logboek: [],
-    sessies: new Map(), // token → id van de gebruiker
-    gebruikers: new Map(), // id → { rol }
-    jaren: new Map(), // schooljaar → stand
-    klassen: new Map(), // schooljaar → Set van namen
-    activiteiten: new Map(), // uitstap → { gewijzigd, stand, schooljaar }
-    bron: { uitstappen: [], instellingen: [] },
-    storing: null, // (oproep) → Response, "gooi" of niets
-  };
-
-  s.gebruiker = (n, rol) => {
-    s.gebruikers.set(ID(n), { rol });
-    const token = b64('{"alg":"ES256"}') + "." + b64(JSON.stringify({ sub: ID(n) })) + "." + b64("handtekening" + n);
-    s.sessies.set(token, ID(n));
-    return token;
-  };
-  s.uitstap = (id, trip, gewijzigd = "2026-11-10T08:00:00+00:00") => {
-    s.bron.uitstappen.push({ id, nr: s.bron.uitstappen.length + 1, schooljaar: "", updated_at: gewijzigd, trip });
-  };
-  s.klassenlijst = (...namen) => {
-    s.bron.instellingen = [{ id: "klimop", data: { klassen: namen.map((naam, i) => ({ id: "k" + i, naam, groep: /K/.test(naam) ? "Kleuter" : "Lager" })) } }];
-  };
-  s.schooljaar = (jaar, stand, namen = []) => {
-    s.jaren.set(jaar, stand);
-    s.klassen.set(jaar, new Set(namen));
-  };
-
-  const json = (status, lichaam, koppen = {}) => new Response(JSON.stringify(lichaam), { status, headers: { "Content-Type": "application/json", ...koppen } });
-  const pg = (code, message, status = 400) => Object.assign(new Error(message), { antwoord: json(status, { code, message: "MT: " + message }) });
-
-  /** Eén uitstap, zoals mt_intern.uitstap_bijwerken in 005. */
-  function uitstapBijwerken(p) {
-    const geldig = typeof p.id === "string" && p.id.length >= 1 && p.id.length <= 60 && typeof p.gewijzigd === "string" && !Number.isNaN(Date.parse(p.gewijzigd))
-      && typeof p.datumStart === "string" && /^\d{4}-\d{2}-\d{2}$/.test(p.datumStart) && ["aangevraagd", "bevestigd", "geannuleerd"].includes(p.planStatus)
-      && Date.parse(p.gewijzigd) <= s.nu + 5 * 60000 && Array.isArray(p.klassen);
-    if (!geldig) return { wat: "ongeldig", uitstap: p.id };
-    const weg = p.categorie === "nascholing" ? "nascholing" : p.verwijderd === true ? "verwijderd" : null;
-    const jaar = schooljaarVan(p.datumStart);
-    const onbekend = () => p.klassen.filter((naam) => !(s.klassen.get(jaar) ?? new Set()).has(naam));
-    const act = s.activiteiten.get(p.id);
-    if (!act) {
-      if (weg) return { wat: "geen", uitstap: p.id };
-      if (!["lopend", "voorbij"].includes(s.jaren.get(jaar))) return { wat: "buiten", uitstap: p.id };
-      s.activiteiten.set(p.id, { gewijzigd: p.gewijzigd, stand: "actief", schooljaar: jaar, plan: p.planStatus, start: p.datumStart });
-      return { wat: "nieuw", uitstap: p.id, onbekend: onbekend() };
-    }
-    if (Date.parse(p.gewijzigd) < Date.parse(act.gewijzigd)) return { wat: "ouder", uitstap: p.id };
-    if (s.jaren.get(act.schooljaar) === "afgesloten") return { wat: "gesloten", uitstap: p.id };
-    if (weg) {
-      if (act.stand === weg) return { wat: "ongewijzigd", uitstap: p.id };
-      Object.assign(act, { stand: weg, gewijzigd: p.gewijzigd });
-      return { wat: "weg", uitstap: p.id };
-    }
-    const wijzigt = act.stand !== "actief" || act.plan !== p.planStatus || act.start !== p.datumStart || act.gewijzigd !== p.gewijzigd;
-    Object.assign(act, { stand: "actief", plan: p.planStatus, start: p.datumStart, gewijzigd: p.gewijzigd });
-    return { wat: wijzigt ? "gewijzigd" : "ongewijzigd", uitstap: p.id, onbekend: onbekend() };
-  }
-
-  const functies = {
-    mt_mijn_account(_a, ctx) {
-      const g = ctx.gebruiker ? s.gebruikers.get(ctx.gebruiker) : null;
-      if (!g) throw pg("42501", "dit account heeft geen toegang tot de MT", 403);
-      const lopend = [...s.jaren].find(([, stand]) => stand === "lopend");
-      return { id: ctx.gebruiker, naam: "Proef", rol: g.rol, schooljaar: lopend ? lopend[0] : null, klassen: [], instellingen: {} };
-    },
-    mt_klassen_bijwerken(a, ctx) {
-      const g = ctx.gebruiker ? s.gebruikers.get(ctx.gebruiker) : null;
-      if (!g || g.rol !== "beheerder") throw pg("42501", "geen rechten voor deze handeling", 403);
-      const lopend = [...s.jaren].find(([, stand]) => stand === "lopend");
-      if (!lopend) throw pg("MT422", "er is nog geen lopend schooljaar");
-      if (!Array.isArray(a.p_klassen) || a.p_klassen.length < 1) throw pg("MT422", "de klassenlijst is leeg of klopt niet. Er is niets gewijzigd.");
-      a.p_klassen.forEach((k, i) => {
-        if (typeof k.id !== "string" || !k.naam || !["Kleuter", "Lager", "Andere"].includes(k.groep)) throw pg("MT422", "klas " + (i + 1) + " in de klassenlijst klopt niet. Er is niets gewijzigd.");
-      });
-      const set = s.klassen.get(lopend[0]);
-      let nieuw = 0;
-      for (const k of a.p_klassen) {
-        if (!set.has(k.naam)) nieuw++;
-        set.add(k.naam);
-      }
-      return { schooljaar: lopend[0], nieuw, gewijzigd: 0, uitgezet: 0 };
-    },
-    mt_uitstappen_bijwerken(a, ctx) {
-      if (ctx.rol !== "service_role") throw pg("42501", "enkel voor de serverfunctie", 403);
-      if (!Array.isArray(a.p_uitstappen) || a.p_uitstappen.length > 5000) throw pg("22023", "de lijst van uitstappen klopt niet");
-      const tel = { nieuw: 0, gewijzigd: 0, weg: 0, ongewijzigd: 0, ongeldig: 0, buiten: 0, geen: 0, gesloten: 0, ouder: 0 };
-      const onbekend = [];
-      for (const p of a.p_uitstappen) {
-        const r = uitstapBijwerken(p);
-        tel[r.wat]++;
-        if (r.onbekend && r.onbekend.length) onbekend.push({ uitstap: r.uitstap, klassen: r.onbekend });
-      }
-      let weg = 0;
-      if (a.p_alle_ids !== null && a.p_alle_ids !== undefined) {
-        const open = [...s.activiteiten].filter(([, act]) => ["lopend", "voorbij"].includes(s.jaren.get(act.schooljaar)));
-        if (a.p_alle_ids.length === 0 && open.some(([, act]) => act.stand === "actief")) {
-          throw pg("MT422", "de uitstappentool gaf geen enkele uitstap terug. Dat is een fout, geen resultaat; er is niets gewijzigd.");
-        }
-        for (const [id, act] of open) {
-          if (act.stand !== "niet_gevonden" && !a.p_alle_ids.includes(id)) {
-            act.stand = "niet_gevonden";
-            weg++;
-          }
-        }
-      }
-      return { ...tel, niet_gevonden: weg, onbekende_klassen: onbekend, wacht: [] };
-    },
-  };
-
-  /** De Data API van de uitstappentool: bladzijden, een totaal en korte kolommen. */
-  function bron(url) {
-    const tabel = url.pathname.replace("/rest/v1/", "");
-    if (!Object.prototype.hasOwnProperty.call(s.bron, tabel)) return json(404, { message: "bestaat niet" });
-    let rijen = s.bron[tabel];
-    const id = url.searchParams.get("id");
-    if (id) rijen = rijen.filter((r) => "eq." + r.id === id);
-    rijen = [...rijen].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    const vanaf = Number(url.searchParams.get("offset"));
-    const stuk = rijen.slice(vanaf, vanaf + Number(url.searchParams.get("limit"))).map((r) => {
-      const uit = {};
-      for (const kolom of url.searchParams.get("select").split(",")) {
-        const m = /^(\w+):trip->(\w+)$/.exec(kolom);
-        if (m) uit[m[1]] = r.trip && r.trip[m[2]] !== undefined ? r.trip[m[2]] : null;
-        else uit[kolom] = r[kolom] === undefined ? null : r[kolom];
-      }
-      return uit;
-    });
-    return json(stuk.length < rijen.length ? 206 : 200, stuk, { "content-range": (stuk.length ? vanaf + "-" + (vanaf + stuk.length - 1) : "*") + "/" + rijen.length });
-  }
-
-  s.haal = (adres, opties) => {
-    const url = new URL(adres);
-    const koppen = new Headers(opties.headers);
-    const lichaam = opties.body ? JSON.parse(opties.body) : null;
-    const oproep = { adres, host: url.origin, pad: url.pathname, methode: opties.method, sleutel: koppen.get("apikey"), drager: koppen.get("Authorization"), lichaam, opties };
-    s.oproepen.push(oproep);
-    s.nu += s.duur;
-    if (s.storing) {
-      const eigen = s.storing(oproep);
-      if (eigen === "gooi") return Promise.reject(new TypeError("geen netwerk"));
-      if (eigen) return Promise.resolve(eigen);
-    }
-    if (url.origin === UITSTAPPENTOOL.url) {
-      if (oproep.sleutel !== UITSTAPPENTOOL.sleutel) return Promise.resolve(json(401, { message: "Invalid API key" }));
-      return Promise.resolve(bron(url));
-    }
-    if (url.origin !== URL_MT) return Promise.reject(new TypeError("onbekend adres: " + adres));
-    if (oproep.sleutel !== PUBLIEK && oproep.sleutel !== GEHEIM) return Promise.resolve(json(401, { message: "Invalid API key" }));
-    const drager = (oproep.drager ?? "").replace(/^Bearer /, "");
-    if (url.pathname === "/auth/v1/user") {
-      const id = s.sessies.get(drager);
-      return Promise.resolve(id ? json(200, { id, email: "proef@school.voorbeeld" }) : json(403, { code: 403, error_code: "bad_jwt", msg: "invalid JWT" }));
-    }
-    const m = /^\/rest\/v1\/rpc\/(\w+)$/.exec(url.pathname);
-    if (!m || !Object.prototype.hasOwnProperty.call(functies, m[1]) || opties.method !== "POST") return Promise.resolve(json(404, { code: "PGRST202", message: "bestaat niet" }));
-    const ctx = drager === GEHEIM && oproep.sleutel === GEHEIM ? { rol: "service_role", gebruiker: null } : { rol: "authenticated", gebruiker: s.sessies.get(drager) ?? null };
-    if (ctx.rol === "authenticated" && !ctx.gebruiker) return Promise.resolve(json(401, { code: "PGRST301", message: "JWT expired" }));
-    try {
-      return Promise.resolve(json(200, functies[m[1]](lichaam ?? {}, ctx)));
-    } catch (fout) {
-      if (fout.antwoord) return Promise.resolve(fout.antwoord);
-      throw fout;
-    }
-  };
-
-  s.behandel = maakBehandelaar({ url: URL_MT, publiek: PUBLIEK, geheim: GEHEIM, haal: s.haal, meld: (regel) => s.logboek.push(regel), nu: () => s.nu });
-  s.vraag = async (token, { lichaam = { actie: "bijwerken" }, methode = "POST", oorsprong = OORSPRONG } = {}) => {
-    const koppen = { "Content-Type": "application/json" };
-    if (oorsprong) koppen.Origin = oorsprong;
-    if (token) koppen.Authorization = "Bearer " + token;
-    const antwoord = await s.behandel(new Request(URL_MT + "/functions/v1/" + UITSTAPFUNCTIE, { method: methode, headers: koppen, body: methode === "POST" ? (typeof lichaam === "string" ? lichaam : JSON.stringify(lichaam)) : undefined }));
-    const tekst = await antwoord.text();
-    return { status: antwoord.status, koppen: antwoord.headers, tekst, g: tekst ? JSON.parse(tekst) : null };
-  };
-  s.naarDatabank = () => s.oproepen.filter((o) => o.pad === "/rest/v1/rpc/mt_uitstappen_bijwerken");
-  s.naarBron = () => s.oproepen.filter((o) => o.host === UITSTAPPENTOOL.url);
-  return s;
-}
+// ---------- De school van de tests (de nabootsing zelf staat in tests/nabootsing.js) ----------
 
 /** Een school met een lopend schooljaar, drie klassen en vier uitstappen in de uitstappentool. */
 function school() {
@@ -277,12 +82,26 @@ Deno.test("een leerkracht opent de MT: de functie leest de uitstappen en werkt d
   assert.deepEqual(r.g.gelezen, { uitstappen: 4, klassen: null });
   assert.equal(r.g.klassen, null);
   // u1 en u2 zijn nieuw; de nascholing kent de MT niet; u4 valt buiten een open schooljaar.
-  assert.deepEqual(r.g.uitstappen, { nieuw: 2, gewijzigd: 0, weg: 0, ongewijzigd: 0, ongeldig: 0, buiten: 1, geen: 1, gesloten: 0, ouder: 0, niet_gevonden: 0 });
+  assert.deepEqual(r.g.uitstappen, { nieuw: 2, gewijzigd: 0, weg: 0, ongewijzigd: 0, ongeldig: 0, buiten: 1, geen: 1, gesloten: 0, niet_gevonden: 0, tegengehouden: 0 });
+  // De lezing is afgesloten, met haar nummer en het uur; de pagina toont wat de functie las (review 2: R12).
+  assert.equal(r.g.stand, "klaar");
+  assert.equal(r.g.lezing, 1);
+  assert.equal(r.g.klaar_op, new Date(s.nu).toISOString());
+  assert.deepEqual(r.g.overzicht, {
+    jaren: [{ schooljaar: "2025-2026", bevestigd: 1, aangevraagd: 0, geannuleerd: 0 }, { schooljaar: "2026-2027", bevestigd: 1, aangevraagd: 1, geannuleerd: 0 }],
+    nascholingen: 1, verwijderd: 0, zonderDatum: 0, onbekendeVersie: 0, onbruikbaar: 0,
+  });
+  assert.deepEqual(r.g.onbruikbaar, []);
+  assert.equal(r.g.verdwenen_taak, null);
+  assert.deepEqual(r.g.wacht, []);
   // 1KA kent de MT nog niet: enkel een beheerder werkt de klassen bij.
-  assert.deepEqual(r.g.onbekende_klassen, [{ uitstap: "u2", klassen: ["1KA"] }]);
+  // Met het schooljaar van de uitstap erbij: zo zegt de melding waar de klas onbekend is (review 2: R07).
+  assert.deepEqual(r.g.onbekende_klassen, [{ uitstap: "u2", schooljaar: "2026-2027", klassen: ["1KA"] }]);
   assert.deepEqual(r.g.onbekende_versie, []);
   assert.ok(Number.isInteger(r.g.duur_ms) && r.g.duur_ms > 0);
-  assert.deepEqual(s.oproepen.map((o) => o.pad), ["/auth/v1/user", "/rest/v1/rpc/mt_mijn_account", "/rest/v1/uitstappen", "/rest/v1/rpc/mt_uitstappen_bijwerken"]);
+  // De volgorde: eerst het nummer van de lezing, dan pas lezen.
+  assert.deepEqual(s.oproepen.map((o) => o.pad), ["/auth/v1/user", "/rest/v1/rpc/mt_mijn_account", "/rest/v1/rpc/mt_lezing_start", "/rest/v1/uitstappen", "/rest/v1/rpc/mt_uitstappen_bijwerken"]);
+  assert.deepEqual(s.oproepen[2].lichaam, { p_door: ID(2) }, "de databank noteert wie de lezing startte: enkel de id");
   assert.equal(r.koppen.get("Access-Control-Allow-Origin"), OORSPRONG);
   assert.equal(r.koppen.get("Cache-Control"), "no-store");
 });
@@ -311,7 +130,11 @@ Deno.test("wat naar de databank gaat: per uitstap enkel de velden van 64.3, met 
   const s = school();
   await s.vraag(s.gebruiker(2, "leerkracht"));
   const [oproep] = s.naarDatabank();
-  assert.deepEqual(oproep.lichaam, {
+  assert.deepEqual(Object.keys(oproep.lichaam).sort(), ["p_alle_ids", "p_lezing", "p_uitkomst", "p_uitstappen"]);
+  assert.equal(oproep.lichaam.p_lezing, 1);
+  // Wat de functie zelf weet, gaat mee met het laatste deel: de databank bewaart het bij de lezing.
+  assert.deepEqual(Object.keys(oproep.lichaam.p_uitkomst).sort(), ["gelezen", "klassen", "onbekende_versie", "onbruikbaar", "overzicht", "rekenversie", "versie"]);
+  assert.deepEqual({ p_uitstappen: oproep.lichaam.p_uitstappen, p_alle_ids: oproep.lichaam.p_alle_ids }, {
     p_uitstappen: [
       { id: "u1", gewijzigd: "2026-11-10T08:00:00+00:00", categorie: "uitstap", verwijderd: false, planStatus: "bevestigd", type: "dag", datumStart: "2026-11-20", datumEind: null, klassen: ["4A", "4B"] },
       { id: "u2", gewijzigd: "2026-11-10T08:00:00+00:00", categorie: "uitstap", verwijderd: false, planStatus: "aangevraagd", type: "dag", datumStart: "2026-12-03", datumEind: null, klassen: ["1KA"] },
@@ -328,14 +151,17 @@ Deno.test("een tweede keer lezen wijzigt niets; een nieuwere versie wel, en wat 
   const s = school();
   const token = s.gebruiker(1, "beheerder");
   await s.vraag(token);
+  s.later();
   const tweede = await s.vraag(token);
-  assert.deepEqual(tweede.g.uitstappen, { nieuw: 0, gewijzigd: 0, weg: 0, ongewijzigd: 2, ongeldig: 0, buiten: 1, geen: 1, gesloten: 0, ouder: 0, niet_gevonden: 0 });
+  assert.deepEqual(tweede.g.uitstappen, { nieuw: 0, gewijzigd: 0, weg: 0, ongewijzigd: 2, ongeldig: 0, buiten: 1, geen: 1, gesloten: 0, niet_gevonden: 0, tegengehouden: 0 });
+  assert.equal(tweede.g.lezing, 2);
   // u1 wijzigt in de uitstappentool, en u2 verdwijnt er.
   s.bron.uitstappen[0].updated_at = "2026-11-15T09:00:00+00:00";
   s.bron.uitstappen[0].trip.planStatus = "geannuleerd";
   s.bron.uitstappen.splice(1, 1);
+  s.later();
   const derde = await s.vraag(token);
-  assert.deepEqual(derde.g.uitstappen, { nieuw: 0, gewijzigd: 1, weg: 0, ongewijzigd: 0, ongeldig: 0, buiten: 1, geen: 1, gesloten: 0, ouder: 0, niet_gevonden: 1 });
+  assert.deepEqual(derde.g.uitstappen, { nieuw: 0, gewijzigd: 1, weg: 0, ongewijzigd: 0, ongeldig: 0, buiten: 1, geen: 1, gesloten: 0, niet_gevonden: 1, tegengehouden: 0 });
   assert.equal(s.activiteiten.get("u2").stand, "niet_gevonden");
 });
 
@@ -345,7 +171,7 @@ Deno.test("nog geen lopend schooljaar: de functie zegt het, en de uitstappen wac
   const r = await s.vraag(s.gebruiker(1, "beheerder"));
   assert.equal(r.status, 200, r.tekst);
   assert.deepEqual(r.g.klassen, { ok: false, melding: "er is nog geen lopend schooljaar" });
-  assert.deepEqual(r.g.uitstappen, { nieuw: 0, gewijzigd: 0, weg: 0, ongewijzigd: 0, ongeldig: 0, buiten: 3, geen: 1, gesloten: 0, ouder: 0, niet_gevonden: 0 });
+  assert.deepEqual(r.g.uitstappen, { nieuw: 0, gewijzigd: 0, weg: 0, ongewijzigd: 0, ongeldig: 0, buiten: 3, geen: 1, gesloten: 0, niet_gevonden: 0, tegengehouden: 0 });
   assert.equal(s.activiteiten.size, 0);
 });
 
@@ -366,11 +192,13 @@ Deno.test("een klassenlijst die de databank weigert, houdt de uitstappen niet te
 });
 
 Deno.test("lukt het bijwerken van de klassen niet om een andere reden dan \"het kan niet\", dan stopt de functie vóór de uitstappen", async () => {
-  for (const [antwoord, status, code] of [
-    [() => new Response('{"code":"55P03","message":"lock timeout"}', { status: 500 }), 503, "databank"],
-    [() => new Response('{"code":"42501","message":"MT: geen rechten voor deze handeling"}', { status: 403 }), 403, "rechten"],
-    [() => "gooi", 503, "databank"],
-    [() => new Response("<html>", { status: 502 }), 500, "databank"],
+  for (const [antwoord, status, code, onzeker] of [
+    [() => new Response('{"code":"55P03","message":"lock timeout"}', { status: 500 }), 503, "databank", false],
+    [() => new Response('{"code":"42501","message":"MT: geen rechten voor deze handeling"}', { status: 403 }), 403, "rechten", false],
+    [() => "gooi", 503, "databank", true],
+    [() => new Response("<html>", { status: 502 }), 500, "databank", true],
+    [() => new Response("", { status: 401 }), 401, "sessie", false],
+    [() => new Response("{}", { status: 404 }), 500, "databank", false],
   ]) {
     const s = school();
     s.storing = (o) => (o.pad === "/rest/v1/rpc/mt_klassen_bijwerken" ? antwoord() : null);
@@ -378,6 +206,12 @@ Deno.test("lukt het bijwerken van de klassen niet om een andere reden dan \"het 
     assert.equal(r.status, status, r.tekst);
     assert.equal(r.g.code, code);
     assert.equal(s.naarDatabank().length, 0, "na een mislukte bijwerking van de klassen gaat er niets naar de uitstappen");
+    // De lezing strandde: de functie meldt het, zodat de volgende niet een minuut wacht.
+    assert.equal(s.oproepen.at(-1).pad, "/rest/v1/rpc/mt_lezing_stop");
+    assert.equal(s.lezingen[0].stand, "afgebroken");
+    // Gaf de databank zelf een fout, dan is er niets bewaard; geen antwoord, of een antwoord van onderweg,
+    // laat het in het midden (review 2: R07).
+    assert.equal(r.g.deels, onzeker, r.tekst);
   }
 });
 
@@ -385,12 +219,14 @@ Deno.test("is de tijd om tijdens het bijwerken, dan vertrekt er geen deel meer n
   const s = nep();
   s.schooljaar("2026-2027", "lopend", ["4A"]);
   for (let i = 0; i < 1500; i++) s.uitstap("u" + String(i).padStart(4, "0"), { datumStart: "2026-11-20", klassen: ["4A"], planStatus: "bevestigd" });
-  // Elke oproep duurt zeven seconden: na het lezen van de twee bladzijden is de tijd van het verzoek om.
-  s.duur = 7000;
+  // Elke oproep duurt vijf seconden: na het lezen van de twee bladzijden is de tijd van het verzoek om.
+  s.duur = 5000;
   const r = await s.vraag(s.gebruiker(2, "leerkracht"));
   assert.equal(r.status, 503, r.tekst);
   assert.equal(r.g.code, "databank");
-  assert.deepEqual(s.oproepen.map((o) => o.pad), ["/auth/v1/user", "/rest/v1/rpc/mt_mijn_account", "/rest/v1/uitstappen", "/rest/v1/uitstappen"]);
+  assert.equal(r.g.deels, false, "er vertrok niets naar de databank");
+  // Enkel het stoppen van de lezing vertrekt nog, met een eigen, korte tijd.
+  assert.deepEqual(s.oproepen.map((o) => o.pad), ["/auth/v1/user", "/rest/v1/rpc/mt_mijn_account", "/rest/v1/rpc/mt_lezing_start", "/rest/v1/uitstappen", "/rest/v1/uitstappen", "/rest/v1/rpc/mt_lezing_stop"]);
 });
 
 Deno.test("een onbekende schemaversie gaat niet naar de databank, maar blijft in de lijst van id's", async () => {
@@ -412,7 +248,7 @@ Deno.test("de secret key gaat enkel naar het eigen project, enkel voor mt_uitsta
   const token = s.gebruiker(1, "beheerder");
   const r = await s.vraag(token);
   assert.equal(r.status, 200, r.tekst);
-  assert.ok(s.oproepen.length >= 6);
+  assert.ok(s.oproepen.length >= 7);
   for (const o of s.oproepen) {
     assert.equal(o.opties.redirect, "error", o.pad + ": een oproep volgt een omleiding");
     assert.ok(o.opties.signal instanceof AbortSignal, o.pad + ": een oproep zonder grens in de tijd");
@@ -426,7 +262,7 @@ Deno.test("de secret key gaat enkel naar het eigen project, enkel voor mt_uitsta
     } else {
       assert.equal(o.host, URL_MT);
       if (alles.includes(GEHEIM)) {
-        assert.equal(o.pad, "/rest/v1/rpc/mt_uitstappen_bijwerken", "de secret key dient voor iets anders dan mt_uitstappen_bijwerken");
+        assert.match(o.pad, /^\/rest\/v1\/rpc\/mt_(lezing_start|lezing_stop|uitstappen_bijwerken)$/, "de secret key dient voor iets anders dan een lezing starten, doorgeven of stoppen");
         assert.equal(o.sleutel, GEHEIM);
         assert.equal(o.drager, "Bearer " + GEHEIM);
       } else {
@@ -439,7 +275,9 @@ Deno.test("de secret key gaat enkel naar het eigen project, enkel voor mt_uitsta
   // Nooit in een antwoord of in het logboek.
   const buiten = r.tekst + JSON.stringify(s.logboek) + JSON.stringify([...r.koppen]);
   assert.ok(!buiten.includes(GEHEIM) && !buiten.includes(token) && !buiten.includes(PUBLIEK) && !buiten.includes(UITSTAPPENTOOL.sleutel));
-  assert.deepEqual(s.logboek, [{ resultaat: "gelukt", gelezen: 4, duur_ms: r.g.duur_ms }]);
+  // In het logboek: de uitkomst en de id van de vrager, zonder naam of e-mailadres (review 2: R2-10).
+  assert.deepEqual(s.logboek, [{ resultaat: "gelukt", stand: "klaar", wie: ID(1), lezing: 1, gelezen: 4, duur_ms: r.g.duur_ms }]);
+  assert.doesNotMatch(JSON.stringify(s.logboek), /@|proef@/);
 });
 
 Deno.test("een omleiding of een ander adres van de uitstappentool krijgt nooit een sleutel van de MT", async () => {
@@ -454,7 +292,7 @@ Deno.test("een omleiding of een ander adres van de uitstappentool krijgt nooit e
 
 Deno.test("de bewaker van het netwerk: naar de uitstappentool gaat enkel een leesvraag met haar eigen sleutel, en enkel daarheen", () => {
   const goed = { method: "GET", headers: { apikey: UITSTAPPENTOOL.sleutel, Accept: "application/json", Prefer: "count=exact" }, redirect: "error" };
-  const adres = UITSTAPPENTOOL.url + "/rest/v1/uitstappen?select=id&order=id.asc&limit=1000&offset=0";
+  const adres = UITSTAPPENTOOL.url + "/rest/v1/uitstappen?select=id&order=id.asc&limit=1000&id=gt.u0999";
   assert.equal(magNaarBron(adres, goed), true);
   // Een ander adres, ook een dat erop lijkt, of het eigen project.
   for (const elders of [UITSTAPPENTOOL.url + ".voorbeeld.be/rest/v1/uitstappen", UITSTAPPENTOOL.url.replace("https:", "http:") + "/rest/v1/uitstappen", URL_MT + "/rest/v1/uitstappen",
@@ -509,17 +347,20 @@ Deno.test("een lege uitstappentool: de databank beslist of dat een fout is", asy
   leeg.schooljaar("2026-2027", "lopend");
   const r = await leeg.vraag(leeg.gebruiker(2, "leerkracht"));
   assert.equal(r.status, 200, r.tekst);
-  assert.deepEqual(leeg.naarDatabank().map((o) => o.lichaam), [{ p_uitstappen: [], p_alle_ids: [] }]);
+  assert.deepEqual(leeg.naarDatabank().map((o) => [o.lichaam.p_uitstappen, o.lichaam.p_alle_ids]), [[[], []]]);
   // Kent de MT al uitstappen, dan is een lege uitstappentool een fout, geen resultaat (17.3).
   const s = school();
   const token = s.gebruiker(2, "leerkracht");
   await s.vraag(token);
   s.bron.uitstappen = [];
+  s.later();
   const fout = await s.vraag(token);
   assert.equal(fout.status, 422);
   assert.equal(fout.g.code, "kan_niet");
   assert.match(fout.g.melding, /geen enkele uitstap/);
+  assert.equal(fout.g.deels, false, "de databank weigerde: er is niets bewaard");
   assert.equal(s.activiteiten.get("u1").stand, "actief", "er is niets gewijzigd");
+  assert.equal(s.lezingen.at(-1).stand, "afgebroken", "de lezing is gestopt");
 });
 
 // ---------- Wat misloopt ----------
@@ -594,7 +435,7 @@ Deno.test("Supabase of de databank antwoordt niet: later opnieuw, zonder halve u
   oud.storing = (o) => (o.pad === "/rest/v1/rpc/mt_uitstappen_bijwerken" ? new Response('{"code":"PGRST202","message":"bestaat niet"}', { status: 404 }) : null);
   const r4 = await oud.vraag(oud.gebruiker(2, "leerkracht"));
   assert.equal(r4.status, 500);
-  assert.match(r4.g.melding, /005_review1/);
+  assert.match(r4.g.melding, /006_review2/);
 
   // Het tweede deel mislukt: de functie zegt het, en stuurt de lijst van id's niet.
   const veel = nep();
@@ -607,17 +448,24 @@ Deno.test("Supabase of de databank antwoordt niet: later opnieuw, zonder halve u
   assert.equal(veel.naarDatabank().length, 2, "na een mislukt deel volgt geen volgend deel");
   assert.equal(veel.naarDatabank().every((o) => o.lichaam.p_alle_ids === null), true, "zonder alle delen gaat de lijst van id's niet mee: niets wordt \"niet gevonden\"");
   assert.equal(veel.activiteiten.size, 500, "wat al doorgegeven was, blijft: de volgende lezing vult aan");
+  assert.equal(r5.g.deels, true, "de melding zegt dat een deel al bewaard kan zijn (review 2: R07)");
+  // De gestrande lezing is gestopt: de volgende leest meteen opnieuw, en vult aan.
+  veel.storing = null;
+  const r6 = await veel.vraag(veel.gebruiker(2, "leerkracht"));
+  assert.equal(r6.status, 200, r6.tekst);
+  assert.equal(r6.g.lezing, 2);
+  assert.equal(veel.activiteiten.size, 1200);
 });
 
 Deno.test("een verzoek blijft onder de dertig seconden van de pagina: is de tijd om, dan begint de functie niets nieuws", async () => {
   const s = nep();
   s.schooljaar("2026-2027", "lopend", ["4A"]);
   for (let i = 0; i < 2600; i++) s.uitstap("u" + String(i).padStart(4, "0"), { datumStart: "2026-11-20", klassen: ["4A"], planStatus: "bevestigd" });
-  // Elke oproep duurt zeven seconden: na drie oproepen is er nog tijd, na vier niet meer.
+  // Elke oproep duurt zeven seconden: na vier oproepen is de tijd om. Enkel het stoppen van de lezing volgt nog.
   s.duur = 7000;
   const r = await s.vraag(s.gebruiker(2, "leerkracht"));
   assert.ok(r.status === 503 || r.status === 502, "status " + r.status);
-  assert.ok(s.oproepen.length <= 4, "de functie begon nog " + s.oproepen.length + " oproepen");
+  assert.deepEqual(s.oproepen.map((o) => o.pad), ["/auth/v1/user", "/rest/v1/rpc/mt_mijn_account", "/rest/v1/rpc/mt_lezing_start", "/rest/v1/uitstappen", "/rest/v1/rpc/mt_lezing_stop"]);
   assert.equal(s.naarDatabank().length, 0);
 });
 
@@ -672,4 +520,335 @@ Deno.test("een onverwachte fout verklapt niets", async () => {
   assert.equal(r2.status, 500);
   assert.equal(r2.g.code, "databank");
   assert.doesNotMatch(r2.tekst, /html|storing/);
+});
+
+// ---------- De lezingen (review 2) ----------
+
+Deno.test("binnen de dertig seconden leest de functie niet opnieuw: ze geeft de uitkomst van de laatste lezing terug (R09, R2-10)", async () => {
+  const s = school();
+  const eerste = await s.vraag(s.gebruiker(1, "beheerder"));
+  s.oproepen.length = 0;
+  s.later(5000);
+  const tweede = await s.vraag(s.gebruiker(2, "leerkracht"));
+  assert.equal(tweede.status, 200, tweede.tekst);
+  assert.equal(tweede.g.stand, "recent");
+  assert.deepEqual(s.oproepen.map((o) => o.pad), ["/auth/v1/user", "/rest/v1/rpc/mt_mijn_account", "/rest/v1/rpc/mt_lezing_start"], "geen lezing van de uitstappentool en geen schrijven");
+  // Dezelfde uitkomst, met het uur van de lezing: de pagina toont dat.
+  const zonderStand = (g) => ({ ...g, stand: null });
+  assert.deepEqual(zonderStand(tweede.g), zonderStand(eerste.g));
+  assert.equal(tweede.g.klaar_op, eerste.g.klaar_op);
+  assert.equal(s.lezingen.length, 1);
+  // Na de dertig seconden volgt een nieuwe lezing.
+  s.later();
+  const derde = await s.vraag(s.gebruiker(2, "leerkracht"));
+  assert.equal(derde.g.stand, "klaar");
+  assert.equal(derde.g.lezing, 2);
+});
+
+Deno.test("loopt er al een lezing, dan start er geen tweede: de vrager krijgt de laatste uitkomst, of nog niets", async () => {
+  const s = school();
+  const token = s.gebruiker(2, "leerkracht");
+  // Een lezing van iemand anders is bezig, en er is nog geen vorige uitkomst.
+  s.lezingen.push({ nummer: 1, stand: "bezig", begonnen: s.nu, klaar: null, door: null, tellingen: null, uitkomst: null, verouderd: false });
+  const r = await s.vraag(token);
+  assert.equal(r.status, 200, r.tekst);
+  assert.equal(r.g.stand, "bezig");
+  assert.equal(r.g.versie, VERSIE);
+  assert.equal(r.g.uitstappen, undefined, "er is nog geen uitkomst om te tonen");
+  assert.equal(s.naarBron().length, 0);
+  assert.equal(s.naarDatabank().length, 0);
+  // Bleef die lezing langer dan een minuut bezig, dan is ze afgebroken, en leest de volgende vraag zelf.
+  s.later(61000);
+  const later = await s.vraag(token);
+  assert.equal(later.g.stand, "klaar");
+  assert.equal(s.lezingen[0].stand, "afgebroken");
+  assert.equal(later.g.lezing, 2);
+});
+
+Deno.test("een lezing die ingehaald is, wijzigt niets: de functie zegt het (R03, R2-08)", async () => {
+  const s = school();
+  // Terwijl deze lezing de uitstappentool leest, start een nieuwere: de databank breekt de oude af.
+  s.storing = (o) => {
+    if (o.pad === "/rest/v1/uitstappen") {
+      s.lezingen[0].stand = "afgebroken";
+      s.lezingen.push({ nummer: 2, stand: "bezig", begonnen: s.nu, klaar: null, door: null, tellingen: null, uitkomst: null, verouderd: false });
+    }
+    return null;
+  };
+  const r = await s.vraag(s.gebruiker(2, "leerkracht"));
+  assert.equal(r.status, 409, r.tekst);
+  assert.equal(r.g.code, "ingehaald");
+  assert.equal(r.g.deels, false);
+  assert.equal(s.activiteiten.size, 0, "een ingehaalde lezing schrijft niets");
+  assert.equal(s.lezingen[1].stand, "bezig", "de nieuwere lezing loopt gewoon door");
+});
+
+Deno.test("de uitstappentool antwoordt niet: de lezing stopt, en de volgende vraag leest meteen opnieuw", async () => {
+  const s = school();
+  const token = s.gebruiker(2, "leerkracht");
+  s.storing = (o) => (o.pad === "/rest/v1/uitstappen" ? "gooi" : null);
+  const r = await s.vraag(token);
+  assert.equal(r.g.code, "bron");
+  assert.equal(r.g.deels, false);
+  assert.deepEqual(s.oproepen.at(-1).lichaam, { p_lezing: 1, p_reden: "bron" });
+  assert.equal(s.lezingen[0].stand, "afgebroken");
+  s.storing = null;
+  const opnieuw = await s.vraag(token);
+  assert.equal(opnieuw.status, 200, opnieuw.tekst);
+  assert.equal(opnieuw.g.stand, "klaar");
+  // Lukt ook het stoppen niet, dan blijft de fout dezelfde: de databank breekt de lezing na een minuut zelf af.
+  const stil = school();
+  stil.storing = (o) => (o.pad === "/rest/v1/uitstappen" || o.pad === "/rest/v1/rpc/mt_lezing_stop" ? "gooi" : null);
+  const r2 = await stil.vraag(stil.gebruiker(2, "leerkracht"));
+  assert.equal(r2.status, 503);
+  assert.equal(r2.g.code, "bron");
+});
+
+Deno.test("de rem: verdwijnen er meer dan vijf uitstappen tegelijk, dan neemt de MT dat niet over, en zegt de uitkomst het (B225)", async () => {
+  const s = nep();
+  s.schooljaar("2026-2027", "lopend", ["4A"]);
+  for (let i = 0; i < 8; i++) s.uitstap("u" + i, { v: 2, datumStart: "2026-11-20", klassen: ["4A"], planStatus: "bevestigd" });
+  const token = s.gebruiker(1, "beheerder");
+  s.klassenlijst("4A");
+  await s.vraag(token);
+  // De uitstappentool toont er nog maar twee: zes ontbreken.
+  s.bron.uitstappen.splice(2);
+  s.later();
+  const r = await s.vraag(token);
+  assert.equal(r.status, 200, r.tekst);
+  assert.equal(r.g.uitstappen.tegengehouden, 6);
+  assert.equal(r.g.uitstappen.niet_gevonden, 0);
+  assert.equal(r.g.verdwenen_taak, s.taken[0].id, "de pagina krijgt de taak mee, voor de knop van de beheerder");
+  assert.equal([...s.activiteiten.values()].every((a) => a.stand === "actief"), true);
+  // Vijf mag wel.
+  const vijf = nep();
+  vijf.schooljaar("2026-2027", "lopend", ["4A"]);
+  for (let i = 0; i < 8; i++) vijf.uitstap("u" + i, { v: 2, datumStart: "2026-11-20", klassen: ["4A"], planStatus: "bevestigd" });
+  const t = vijf.gebruiker(2, "leerkracht");
+  await vijf.vraag(t);
+  vijf.bron.uitstappen.splice(3);
+  vijf.later();
+  const r2 = await vijf.vraag(t);
+  assert.equal(r2.g.uitstappen.niet_gevonden, 5);
+  assert.equal(r2.g.uitstappen.tegengehouden, 0);
+  assert.equal(r2.g.verdwenen_taak, null);
+});
+
+Deno.test("een rij in een vorm die de overgenomen code niet verwacht, legt het bijwerken niet stil (R13)", async () => {
+  const s = school();
+  // Iedereen kan in de uitstappentool een aanvraag toevoegen, ook buiten het scherm om.
+  s.uitstap("u5", { v: 2, datumStart: ["2026-11-25"], klassen: ["4A"], planStatus: "bevestigd" });
+  s.uitstap("u6", { v: 2, datumStart: "2026-11-26", klassen: Array.from({ length: 51 }, (_, i) => "K" + i), planStatus: "bevestigd" });
+  s.uitstap("u7", null);
+  s.uitstap("u8", "geen uitstap");
+  const r = await s.vraag(s.gebruiker(2, "leerkracht"));
+  assert.equal(r.status, 200, r.tekst);
+  assert.deepEqual(r.g.onbruikbaar, ["u5", "u6"]);
+  assert.equal(r.g.overzicht.onbruikbaar, 2);
+  // Een rij zonder gegevens is een uitstap zonder datum: de databank slaat ze over als ongeldig (R2-06).
+  assert.equal(r.g.overzicht.zonderDatum, 2);
+  assert.equal(r.g.uitstappen.ongeldig, 2);
+  const [oproep] = s.naarDatabank();
+  assert.deepEqual(oproep.lichaam.p_uitstappen.map((u) => u.id), ["u1", "u2", "u3", "u4", "u7", "u8"]);
+  // Hun id blijft in de lijst: niets wordt daardoor "niet gevonden".
+  assert.deepEqual(oproep.lichaam.p_alle_ids, ["u1", "u2", "u3", "u4", "u5", "u6", "u7", "u8"]);
+  assert.equal(r.g.uitstappen.nieuw, 2, "de andere uitstappen komen gewoon in de MT");
+});
+
+Deno.test("struikelt de functie toch over wat ze las, dan is er nog niets gewijzigd: ook de klassen niet (R13)", async () => {
+  const s = school();
+  // Een antwoord van de uitstappentool waarin een rij een id heeft die geen tekst is: de lijst is niet te vertrouwen.
+  s.storing = (o) => (o.pad === "/rest/v1/uitstappen" ? new Response(JSON.stringify([{ id: 5, updated_at: "2026-11-10T08:00:00+00:00", datumStart: "2026-11-20" }]), { status: 200, headers: { "content-range": "0-0/1" } }) : null);
+  const r = await s.vraag(s.gebruiker(1, "beheerder"));
+  assert.equal(r.status, 502, r.tekst);
+  assert.equal(r.g.code, "bron");
+  assert.equal(r.g.deels, false);
+  assert.equal(s.oproepen.some((o) => o.pad === "/rest/v1/rpc/mt_klassen_bijwerken"), false, "de klassen gaan pas mee als ook de uitstappen klaarstaan");
+});
+
+Deno.test("lezen op id: een rij die tussen twee bladzijden verdwijnt en een die erbij komt, laten geen bestaande uitstap wegvallen (R05, R2-04)", async () => {
+  const s = nep();
+  s.schooljaar("2026-2027", "lopend", ["4A"]);
+  for (let i = 0; i < 1500; i++) s.uitstap("u" + String(i).padStart(4, "0"), { v: 2, datumStart: "2026-11-20", klassen: ["4A"], planStatus: "bevestigd" });
+  let bladzijde = 0;
+  s.storing = (o) => {
+    // Tussen de eerste en de tweede bladzijde: de eerste rij wordt gewist, en achteraan komt er een bij.
+    if (o.pad === "/rest/v1/uitstappen" && ++bladzijde === 2) {
+      s.bron.uitstappen.shift();
+      s.uitstap("u2000", { v: 2, datumStart: "2026-11-20", klassen: ["4A"], planStatus: "bevestigd" });
+    }
+    return null;
+  };
+  const r = await s.vraag(s.gebruiker(2, "leerkracht"));
+  assert.equal(r.status, 200, r.tekst);
+  const ids = s.naarDatabank().at(-1).lichaam.p_alle_ids;
+  assert.ok(ids.includes("u1000"), "u1000 stond er heel de tijd, en is toch weggevallen");
+  // Alles wat er heel de tijd stond, is gelezen; de tweede vraag ging verder vanaf de laatste id.
+  for (let i = 1; i < 1500; i++) assert.ok(ids.includes("u" + String(i).padStart(4, "0")), "u" + i + " ontbreekt");
+  assert.match(s.naarBron()[1].adres, /[?&]id=gt\.u0999(&|$)/);
+  assert.doesNotMatch(s.naarBron().map((o) => o.adres).join(" "), /offset=/);
+});
+
+Deno.test("lezen op id: geeft de uitstappentool kleinere bladzijden dan gevraagd, dan leest de MT toch alles", async () => {
+  const s = nep();
+  s.schooljaar("2026-2027", "lopend", ["4A"]);
+  for (let i = 0; i < 250; i++) s.uitstap("u" + String(i).padStart(4, "0"), { v: 2, datumStart: "2026-11-20", klassen: ["4A"], planStatus: "bevestigd" });
+  s.maxRijen = 100;
+  const r = await s.vraag(s.gebruiker(2, "leerkracht"));
+  assert.equal(r.status, 200, r.tekst);
+  assert.equal(r.g.gelezen.uitstappen, 250);
+  assert.equal(s.naarBron().length, 3);
+  assert.equal(s.activiteiten.size, 250);
+});
+
+Deno.test("een datum die wacht, staat in de uitkomst van de lezing (R2-12)", async () => {
+  const s = school();
+  const token = s.gebruiker(2, "leerkracht");
+  await s.vraag(token);
+  // In de MT ligt de datum van u1 vast, bv. door een bevestigde klas; in de uitstappentool verschuift ze.
+  s.vast.add("u1");
+  s.bron.uitstappen[0].trip.datumStart = "2026-11-27";
+  s.bron.uitstappen[0].updated_at = "2026-11-15T09:00:00+00:00";
+  s.later();
+  const r = await s.vraag(token);
+  assert.deepEqual(r.g.wacht, ["u1"]);
+  assert.equal(s.activiteiten.get("u1").start, "2026-11-20", "de MT houdt de datum van toen");
+  assert.equal(s.activiteiten.get("u1").gewijzigd, "2026-11-10T08:00:00+00:00", "en de versie van toen");
+});
+
+Deno.test("de nabootsing: dezelfde verwijderde stand in een nieuwere versie, klassen die geen lijst zijn, en een einddatum vóór de start", async () => {
+  const s = school();
+  const token = s.gebruiker(2, "leerkracht");
+  await s.vraag(token);
+  s.bron.uitstappen[0].trip.verwijderdOp = "2026-11-12T10:00:00.000Z";
+  s.bron.uitstappen[0].updated_at = "2026-11-12T10:00:00+00:00";
+  s.later();
+  assert.equal((await s.vraag(token)).g.uitstappen.weg, 1);
+  s.bron.uitstappen[0].updated_at = "2026-11-14T10:00:00+00:00";
+  s.later();
+  const r = await s.vraag(token);
+  assert.equal(r.g.uitstappen.ongewijzigd, 2);
+  assert.equal(s.activiteiten.get("u1").gewijzigd, "2026-11-14T10:00:00+00:00", "de MT onthoudt de versie die ze las (R04)");
+  // Een meerdaagse met een einddatum vóór de start is ongeldig, zoals in de databank.
+  s.uitstap("u9", { v: 2, type: "meerdaags", datumStart: "2026-12-10", datumEind: "2026-12-08", klassen: ["4A"], planStatus: "bevestigd" });
+  s.later();
+  const r2 = await s.vraag(token);
+  assert.equal(r2.g.uitstappen.ongeldig + r2.g.overzicht.zonderDatum >= 1, true);
+  assert.equal(s.activiteiten.has("u9"), false);
+});
+
+// ---------- Deels bewaard (review 2: R07) ----------
+
+Deno.test("mislukt het bijwerken, dan zegt het antwoord of er al iets bewaard is of bewaard kan zijn (R07)", async () => {
+  const leerkracht = (s) => s.gebruiker(2, "leerkracht");
+  const veel = () => {
+    const s = nep();
+    s.schooljaar("2026-2027", "lopend", ["4A"]);
+    for (let i = 0; i < 1200; i++) s.uitstap("u" + String(i).padStart(4, "0"), { v: 2, datumStart: "2026-11-20", klassen: ["4A"], planStatus: "bevestigd" });
+    return s;
+  };
+  const opDeel = (s, nummer, antwoord) => {
+    let nr = 0;
+    s.storing = (o) => (o.pad === "/rest/v1/rpc/mt_uitstappen_bijwerken" && ++nr === nummer ? antwoord() : null);
+  };
+
+  // De databank gaf zelf een fout: ze draaide alles van die oproep terug. Er is niets bewaard.
+  const geweigerd = school();
+  opDeel(geweigerd, 1, () => new Response('{"code":"57014","message":"canceling statement due to statement timeout"}', { status: 500 }));
+  const r1 = await geweigerd.vraag(leerkracht(geweigerd));
+  assert.equal(r1.status, 503, r1.tekst);
+  assert.equal(r1.g.deels, false);
+
+  // Geen antwoord, of een antwoord van onderweg: de databank kan de oproep uitgevoerd hebben.
+  for (const antwoord of [() => "gooi", () => new Response("<html>", { status: 502 }), () => new Response("", { status: 500 })]) {
+    const stil = school();
+    opDeel(stil, 1, antwoord);
+    const r = await stil.vraag(leerkracht(stil));
+    assert.equal(r.g.code, "databank", r.tekst);
+    assert.equal(r.g.deels, true, r.tekst);
+  }
+
+  // Een goed antwoord dat de functie niet kan lezen: de databank voerde de oproep uit.
+  const onleesbaar = school();
+  opDeel(onleesbaar, 1, () => new Response("null", { status: 200 }));
+  const r2 = await onleesbaar.vraag(leerkracht(onleesbaar));
+  assert.equal(r2.status, 500, r2.tekst);
+  assert.equal(r2.g.deels, true);
+
+  // De oproep raakte er niet door: niets bewaard.
+  for (const [status, lichaam] of [[401, ""], [404, "{}"]]) {
+    const dicht = school();
+    opDeel(dicht, 1, () => new Response(lichaam, { status }));
+    const r = await dicht.vraag(leerkracht(dicht));
+    assert.equal(r.g.deels, false, r.tekst);
+  }
+
+  // Het eerste deel is bewaard; het tweede weigert de databank. Een deel is dus bewaard.
+  const half = veel();
+  opDeel(half, 2, () => new Response('{"code":"57014","message":"canceling statement"}', { status: 500 }));
+  const r3 = await half.vraag(leerkracht(half));
+  assert.equal(r3.status, 503, r3.tekst);
+  assert.equal(r3.g.deels, true);
+  assert.equal(half.activiteiten.size, 500);
+
+  // De klassen zijn bijgewerkt, en de uitstappen weigert de databank: de klassen zijn bewaard.
+  const metKlassen = school();
+  opDeel(metKlassen, 1, () => new Response('{"code":"MT422","message":"MT: dat kan niet"}', { status: 400 }));
+  const r4 = await metKlassen.vraag(metKlassen.gebruiker(1, "beheerder"));
+  assert.equal(r4.status, 422, r4.tekst);
+  assert.equal(metKlassen.klassen.get("2026-2027").has("1KA"), true);
+  assert.equal(r4.g.deels, true);
+  // Een tweede keer wijzigt er aan de klassen niets meer: dan is er ook niets bewaard.
+  const beheerder = metKlassen.gebruiker(1, "beheerder");
+  opDeel(metKlassen, 1, () => new Response('{"code":"MT422","message":"MT: dat kan niet"}', { status: 400 }));
+  const r5 = await metKlassen.vraag(beheerder);
+  assert.equal(r5.status, 422, r5.tekst);
+  assert.equal(r5.g.deels, false);
+});
+
+Deno.test("een onverwachte fout na een bewaard deel: het antwoord verklapt niets, maar zegt wel dat een deel bewaard is (R07)", async () => {
+  const s = nep();
+  s.schooljaar("2026-2027", "lopend", ["4A"]);
+  for (let i = 0; i < 1200; i++) s.uitstap("u" + String(i).padStart(4, "0"), { v: 2, datumStart: "2026-11-20", klassen: ["4A"], planStatus: "bevestigd" });
+  // De klok van de functie valt uit zodra het eerste deel onderweg is: het tweede deel begint niet.
+  let kapot = false;
+  let nr = 0;
+  s.storing = (o) => {
+    if (o.pad === "/rest/v1/rpc/mt_uitstappen_bijwerken" && ++nr === 1) kapot = true;
+    return null;
+  };
+  const logboek = [];
+  const behandel = maakBehandelaar({
+    url: URL_MT, publiek: PUBLIEK, geheim: GEHEIM, haal: s.haal, meld: (regel) => logboek.push(regel),
+    nu: () => {
+      if (kapot) throw new RangeError("de klok met een geheim erin");
+      return s.nu;
+    },
+  });
+  const antwoord = await behandel(new Request(URL_MT + "/functions/v1/" + UITSTAPFUNCTIE, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: OORSPRONG, Authorization: "Bearer " + s.gebruiker(2, "leerkracht") }, body: '{"actie":"bijwerken"}',
+  }));
+  const tekst = await antwoord.text();
+  assert.equal(antwoord.status, 500, tekst);
+  assert.deepEqual(JSON.parse(tekst), { ok: false, code: "onverwacht", melding: "De serverfunctie gaf een onverwachte fout.", deels: true });
+  assert.equal(s.activiteiten.size, 500, "het eerste deel is bewaard");
+  assert.deepEqual(logboek, [{ resultaat: "onverwacht", soort: "RangeError", wie: ID(2) }]);
+  assert.doesNotMatch(tekst + JSON.stringify(logboek), /geheim/);
+});
+
+Deno.test("het toegangsbewijs telt enkel als Supabase het aanvaardt: een ander antwoord dan 200 is geen aanmelding, ook met een id erin (review 2: R2-20)", async () => {
+  for (const status of [201, 206, 301, 400, 401, 403, 404]) {
+    const s = school();
+    s.storing = (o) => (o.pad === "/auth/v1/user" ? new Response(JSON.stringify({ id: ID(2), email: "proef@school.voorbeeld" }), { status }) : null);
+    const r = await s.vraag(s.gebruiker(2, "leerkracht"));
+    assert.deepEqual([r.status, r.g.code], [401, "sessie"], "status " + status + ": " + r.tekst);
+    assert.deepEqual(s.oproepen.map((o) => o.pad), ["/auth/v1/user"], "na een geweigerd toegangsbewijs ging de functie toch verder");
+  }
+  // Een antwoord 200 zonder bruikbare id is ook geen aanmelding.
+  for (const lichaam of [{}, { id: "geen-uuid" }, { id: 5 }, null, []]) {
+    const s = school();
+    s.storing = (o) => (o.pad === "/auth/v1/user" ? new Response(JSON.stringify(lichaam), { status: 200 }) : null);
+    const r = await s.vraag(s.gebruiker(2, "leerkracht"));
+    assert.deepEqual([r.status, r.g.code], [401, "sessie"], JSON.stringify(lichaam));
+  }
 });

@@ -1,4 +1,4 @@
-// MT · ui.js · versie 0.7.1
+// MT · ui.js · versie 0.8.0
 // De gedeelde onderdelen van de schermen (17.1). Het enige bestand dat HTML in de pagina zet
 // (regel 4, 17.10). Een scherm stelt zijn opbouw samen met het sjabloon html`…`: elke ingevoegde
 // waarde wordt daarin standaard tekst, zodat een naam nooit als opmaak op het scherm komt. Enkel
@@ -7,7 +7,7 @@
 // de meldingen onderaan. Sinds stap 3 de bedragen (euro). Later komen hier de statuslabels, het
 // ballonnetje van de materialentool, de filterbalk en de tabellen.
 
-export const VERSIE = "0.7.1";
+export const VERSIE = "0.8.0";
 
 // ---------- Tekst en opmaak ----------
 

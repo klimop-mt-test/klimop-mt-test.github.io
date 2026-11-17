@@ -1,16 +1,21 @@
 // MT · tests/rekenen_test.js
-// Het rekencontract (mt-rekencontract.md, versie 19) als automatische test (17.1, 17.12, T10):
+// Het rekencontract (mt-rekencontract.md, versie 20) als automatische test (17.1, 17.12, T10):
 //   - de testgevallen van fase 1, uit dezelfde lijst als de testpagina (code/rekentest.js);
 //   - de afronding van B97, ook bij een credit en bij grote bedragen;
-//   - G21, de controle over alle gevallen, met willekeurige bedragen en aantallen: elk bedrag wijkt
-//     hoogstens een halve cent af van het exacte deel. Het exacte deel rekent deze test zelf uit, leerling
-//     per leerling en los van rekenen.js, volgens 1.16 van het contract;
+//   - G21, de controle over alle gevallen, met willekeurige bedragen en aantallen. Twee soorten controles:
+//       · per leerling: het bedrag is het exacte deel, afgerond volgens B97. Het exacte deel rekent deze
+//         test zelf uit, leerling per leerling en los van rekenen.js, volgens 1.16 van het contract, en de
+//         afronding met een eigen vorm van B97;
+//       · uit de invoer alleen, zonder 1.16: wat de tussenkomsten dragen, is wat ze waard zijn, tot de
+//         kost; de rest is wat ze meer waard zijn; en de ouders en de school betalen samen de kost min de
+//         tussenkomsten (review 2: R01, R2-02, R11);
 //   - wat niet mag: een onbekende prijs die € 0 wordt, een deling door nul, een oproep die niet klopt.
 // Alles draait twee keer, in UTC en in de tijd van Brussel, met dezelfde uitkomst.
 
 import assert from "node:assert/strict";
 import {
-  AANWEZIG, aantallen, afronden, bedrag, dagNa, ENKEL_GEDEELD, isDatum, isSchoolverlater, jaarStand, NIET_AANGEREKEND, periodeOp, plafondStand, profiel, profielVan,
+  AANWEZIG, aantallen, afronden, bedrag, dagNa, ENKEL_GEDEELD, inGratisZwemjaar, isDatum, isSchoolverlater, jaarStand, leerjaarVan, NIET_AANGEREKEND, periodeOp, plafondStand, profiel,
+  profielVan,
   REKENVERSIE, schooljaarVan, standBedrag, totalen, verdeel, verdeelCorrectie,
 } from "../code/rekenen.js";
 import { alsTekst, telling, voerUit } from "../code/rekentest.js";
@@ -34,7 +39,7 @@ Deno.test("rekencontract: de lijst bevat alle gevallen van fase 1", () => {
   const nummers = gevallen.map((geval) => geval.nr);
   assert.deepEqual(nummers, ["A1", "A2", "A6", "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G11", "G12", "G18", "G19", "G20"]);
   const t = telling(gevallen);
-  assert.ok(t.controles >= 110, "te weinig controles: " + t.controles);
+  assert.ok(t.controles >= 135, "te weinig controles: " + t.controles);
   assert.equal(t.afwijkend, 0);
   for (const geval of gevallen) assert.ok(geval.rijen.length >= 2, geval.nr + " heeft te weinig controles");
 });
@@ -288,17 +293,62 @@ function exactSamen(x, y) {
   return { x: maak(x, binnenX, terugX), y: maak(y, binnenY, terugY), rest: x.O.min(binnenY).min(terugX).plus(y.O.min(binnenX).min(terugY)) };
 }
 
-Deno.test("G21: elk bedrag wijkt hoogstens een halve cent af van het exacte deel, en het vervoer is nooit negatief", () => {
+/**
+ * B97, los van rekenen.js en in een andere vorm: naar de dichtstbijzijnde cent, tot en met de halve cent
+ * naar beneden. Voor een bedrag x ≥ 0 is dat het kleinste gehele getal dat niet onder x − ½ ligt; bij een
+ * credit geldt hetzelfde op het bedrag.
+ */
+function b97(breuk) {
+  let t = breuk.t;
+  let n = breuk.n;
+  if (n < 0n) {
+    t = -t;
+    n = -n;
+  }
+  const negatief = t < 0n;
+  if (negatief) t = -t;
+  // Het kleinste gehele getal ≥ (2t − n) / 2n. Een deling van BigInt kapt af naar nul: voor een teller onder nul is dat al naar boven.
+  const teller = 2n * t - n;
+  const uit = teller <= 0n ? 0n : (teller + 2n * n - 1n) / (2n * n);
+  return Number(negatief ? -uit : uit);
+}
+
+Deno.test("G21: de eigen afronding van de test volgt B97, ook bij een credit", () => {
+  const b = (t, n) => b97(new Breuk(t, n));
+  assert.deepEqual([b(67, 2), b(6699, 200), b(6701, 200), b(336, 10), b(33, 1), b(0, 7), b(1, 2), b(3, 2), b(5, 10)], [33, 33, 34, 34, 33, 0, 0, 1, 0]);
+  assert.deepEqual([b(-67, 2), b(-6701, 200), b(-1, 2), b(67, -2), b(-3, 2)], [-33, -34, 0, -33, -1]);
+  // En ze geeft overal hetzelfde als afronden() van rekenen.js: twee vormen van dezelfde regel.
+  const kies = reeks(97);
+  for (let i = 0; i < 20000; i++) {
+    const t = kies(2000001) - 1000000;
+    const n = kies(400) + 1;
+    assert.equal(afronden(t, n), b(t, n), t + "/" + n);
+  }
+});
+
+/** Uit de invoer alleen: wat een onderdeel kost, en wat zijn tussenkomsten samen waard zijn. */
+function uitDeInvoer(o, aangerekend, betalers) {
+  const kost = o.G + o.p * betalers;
+  // Een bedrag per kind is er voor wie de prijs per kind betaalt; zonder prijs per kind voor elke aangerekende leerling (B104).
+  const perKind = o.t * (o.p > 0 ? betalers : aangerekend);
+  return { kost, beschikbaar: o.T + perKind };
+}
+
+Deno.test("G21: elk bedrag is het exacte deel, afgerond volgens B97, en het vervoer is nooit negatief", () => {
   const kies = reeks(20261116);
   const bedragOfNul = (max) => (kies(4) === 0 ? 0 : kies(max) + 1);
   let metTerug = 0;
   let metRest = 0;
+  let opDeHalveCent = 0;
+  let zonderAangerekenden = 0;
   for (let ronde = 0; ronde < 4000; ronde++) {
     const n = kies(60) + 1;
+    // Eén ronde op twintig: iedereen heeft een attest (1.4, G4).
+    const allenAttest = kies(20) === 0;
     // Per leerling en per onderdeel: aangerekend, en betaalt hij de prijs per kind?
     const leerlingen = Array.from({ length: n }, () => {
       const soort = kies(10);
-      const a = soort > 0;                   // 1 op 10 heeft een attest
+      const a = !allenAttest && soort > 0;   // 1 op 10 heeft een attest
       const p = a && soort > 2;              // 2 op 10 zijn aangerekend, maar afwezig
       const andersVoorVervoer = kies(12) === 0;
       return { activiteit: { a, p }, vervoer: andersVoorVervoer ? { a: !a, p: false } : { a, p: a && kies(3) > 0 } };
@@ -329,69 +379,201 @@ Deno.test("G21: elk bedrag wijkt hoogstens een halve cent af van het exacte deel
 
     const waar = "ronde " + ronde + ": " + JSON.stringify({ activiteit: invoer(act), vervoer: invoer(verv) });
     let somExact = B(0);
-    let somOuders = 0n;
+    let somOuders = 0;
     for (let i = 0; i < n; i++) {
       const wie = { activiteit: { aangerekend: act.lln[i].a, perKind: act.lln[i].p }, vervoer: { aangerekend: verv.lln[i].a, perKind: verv.lln[i].p } };
       const b = bedrag(v, wie);
-      const exact = exactAct.delen[i].plus(exactVerv.delen[i]);
-      // |totaal − exact| ≤ 1/2  ⇔  |2·(totaal·n − t)| ≤ n
-      let verschil = 2n * (BigInt(b.totaal) * exact.n - exact.t);
-      if (verschil < 0n) verschil = -verschil;
-      const noemer = exact.n < 0n ? -exact.n : exact.n;
-      assert.ok(verschil <= noemer, waar + ": leerling " + i + " betaalt " + b.totaal + ", exact " + exact.t + "/" + exact.n);
+      const deel = exactAct.delen[i].plus(exactVerv.delen[i]);
+      // Het totaal is het exacte deel, één keer afgerond (B98), precies volgens B97: ook op de halve cent.
+      assert.equal(b.totaal, b97(deel), waar + ": leerling " + i + " betaalt " + b.totaal + ", exact " + deel.t + "/" + deel.n);
+      // Op de fiche: de activiteit afgerond, en het vervoer als het verschil met het afgeronde totaal.
+      assert.equal(b.activiteit, b97(exactAct.delen[i]), waar + ": de activiteit van leerling " + i);
+      assert.equal(b.vervoer, b.totaal - b.activiteit, waar + ": de lijnen tellen niet op");
       assert.ok(b.activiteit >= 0 && b.vervoer >= 0, waar + ": een negatief bedrag op de fiche");
-      assert.equal(b.activiteit + b.vervoer, b.totaal, waar + ": de lijnen tellen niet op");
-      somExact = somExact.plus(exact);
-      somOuders += BigInt(b.totaal);
+      const dubbel = deel.plus(deel);
+      if (dubbel.t % dubbel.n === 0n && deel.t % deel.n !== 0n) opDeHalveCent++;
+      somExact = somExact.plus(deel);
+      somOuders += b.totaal;
     }
-    // Samen wijken de ouders hoogstens een halve cent per leerling af van wat exact te betalen is.
-    let samen = 2n * (somOuders * somExact.n - somExact.t);
-    if (samen < 0n) samen = -samen;
-    assert.ok(samen <= BigInt(n) * (somExact.n < 0n ? -somExact.n : somExact.n), waar + ": de som wijkt te veel af");
-    // Wat exact te betalen is, is de kost na de tussenkomsten: er verdwijnt niets en er komt niets bij.
+
+    // Het model sluit op zichzelf: de exacte delen tellen op tot wat er in het model na de tussenkomsten te
+    // betalen blijft. Dat toetst het model van deze test, niet rekenen.js (review 2: R2-02).
     const kostNa = (x, deel) => (x.lln.some((l) => l.a) ? deel.blijft : B(0));
-    const verwacht = kostNa(act, exactAct).plus(kostNa(verv, exactVerv));
-    assert.ok(somExact.min(verwacht).nul, waar + ": de exacte delen tellen niet op tot de kost na de tussenkomsten");
-    // Een tussenkomst blijft nooit ongebruikt zolang er nog iets te betalen is (B219, B221): blijft er
-    // een rest, dan kost geen enkel onderdeel nog iets, en betaalt geen enkele leerling nog iets.
-    if (!exact.rest.nul) {
-      assert.ok(exactAct.blijft.nul && exactVerv.blijft.nul && somExact.nul && somOuders === 0n, waar + ": er blijft een rest terwijl er nog iets te betalen is");
-    }
-    // De rest die rekenen.js meldt, is die rest, afgerond op de cent.
-    let restVerschil = 2n * (BigInt(v.overschot.rest) * exact.rest.n - exact.rest.t);
-    if (restVerschil < 0n) restVerschil = -restVerschil;
-    assert.ok(restVerschil <= (exact.rest.n < 0n ? -exact.rest.n : exact.rest.n), waar + ": de rest is " + v.overschot.rest + ", exact " + exact.rest.t + "/" + exact.rest.n);
+    assert.ok(somExact.min(kostNa(act, exactAct).plus(kostNa(verv, exactVerv))).nul, waar + ": het model van de test sluit niet");
+
+    // Uit de invoer alleen, zonder het model en zonder 1.16: wat de tussenkomsten dragen, is alles wat ze
+    // waard zijn, tot de kost; de rest is wat ze meer waard zijn dan de kost (B219, B221). Tot op de cent.
+    const A = (x) => x.lln.filter((l) => l.a).length;
+    const pk = (x) => x.lln.filter((l) => l.p).length;
+    const a = uitDeInvoer(act.o, A(act), pk(act));
+    const w = uitDeInvoer(verv.o, A(verv), pk(verv));
+    const kost = a.kost + w.kost;
+    const beschikbaar = a.beschikbaar + w.beschikbaar;
+    assert.equal(v.activiteit.kost, a.kost, waar);
+    assert.equal(v.vervoer.kost, w.kost, waar);
+    assert.equal(v.activiteit.tussenkomst + v.vervoer.tussenkomst, Math.min(kost, beschikbaar), waar + ": wat de tussenkomsten dragen");
+    assert.equal(v.overschot.rest, Math.max(0, beschikbaar - kost), waar + ": de rest");
+    assert.ok(v.activiteit.tussenkomst >= 0 && v.activiteit.tussenkomst <= a.kost, waar + ": de tussenkomst van de activiteit");
+    assert.ok(v.vervoer.tussenkomst >= 0 && v.vervoer.tussenkomst <= w.kost, waar + ": de tussenkomst van het vervoer");
+    // Is elk onderdeel met een kost aan iemand aangerekend, dan betalen de ouders samen de kost min de
+    // tussenkomsten, op hoogstens een halve cent per leerling. Is er een rest, dan betaalt niemand nog iets.
+    const iemand = leerlingen.filter((_, i) => act.lln[i].a || verv.lln[i].a).length;
+    const alAangerekend = (A(act) > 0 || a.kost === 0) && (A(verv) > 0 || w.kost === 0);
+    if (alAangerekend) assert.ok(Math.abs(somOuders - Math.max(0, kost - beschikbaar)) * 2 <= iemand, waar + ": de ouders betalen samen " + somOuders);
+    else zonderAangerekenden++;
+    if (beschikbaar > kost && alAangerekend) assert.equal(somOuders, 0, waar + ": er blijft een rest terwijl er nog iets te betalen is");
     if (v.overschot.terugActiviteit + v.overschot.terugVervoer > 0) metTerug++;
     if (v.overschot.rest > 0) metRest++;
   }
-  // De willekeurige gevallen raken ook echt wat ze moeten nakijken: een overschot dat terugkeert, en een rest.
+  // De willekeurige gevallen raken ook echt wat ze moeten nakijken.
   assert.ok(metTerug >= 40 && metRest >= 40, "te weinig gevallen met een overschot dat terugkeert (" + metTerug + ") of met een rest (" + metRest + ")");
+  assert.ok(opDeHalveCent >= 20, "te weinig bedragen precies op de halve cent: " + opDeHalveCent);
+  assert.ok(zonderAangerekenden >= 20, "te weinig gevallen waarin een onderdeel met een kost aan niemand aangerekend is: " + zonderAangerekenden);
 });
 
-Deno.test("G21: de sommen van een activiteit kloppen met de kost, de tussenkomsten en de bedragen per leerling", () => {
+Deno.test("G21: de sommen van een activiteit volgen uit de invoer alleen, ook met een bedrag per kind, een lege groep, en een deel dat de school draagt", () => {
   const kies = reeks(424242);
-  for (let ronde = 0; ronde < 1500; ronde++) {
-    const aanwezig = kies(40);
-    const afwezig = kies(5);
-    const attest = kies(4);
-    const A = aanwezig + afwezig;
+  const SCHOOL = profiel(true, true, true);
+  const tel = { perKind: 0, school: 0, niemand: 0, rest: 0, afronding: 0 };
+  for (let ronde = 0; ronde < 4000; ronde++) {
+    // Eén ronde op vijftien: niemand wordt aangerekend (1.4, G4).
+    const niemand = kies(15) === 0;
+    const aanwezig = niemand ? 0 : kies(40);
+    const afwezig = niemand ? 0 : kies(5);
+    const attest = kies(4) + (niemand ? 1 : 0);
+    // Eén ronde op vier: de school draagt het deel van enkele aanwezigen (bv. het gratis zwemjaar).
+    const vanSchool = !niemand && kies(4) === 0 ? kies(12) + 1 : 0;
+    const A = aanwezig + afwezig + vanSchool;
+    const betalers = aanwezig + vanSchool;
+    const metPrijs = kies(2) === 1;
+    const o = {
+      activiteit: { G: kies(3) ? kies(100000) : 0, p: metPrijs ? kies(2000) + 1 : 0, T: kies(4) ? 0 : kies(50000), t: kies(4) ? 0 : kies(2500) + 1 },
+      vervoer: { G: kies(60000), p: 0, T: kies(5) ? 0 : kies(30000), t: kies(6) ? 0 : kies(600) + 1 },
+    };
     const invoer = {
-      activiteit: { gedeeld: kies(3) ? kies(100000) : 0, perKind: kies(2) ? kies(2000) : 0, aangerekend: A, betalers: aanwezig, tussenkomstTotaal: kies(4) ? 0 : kies(50000) },
-      vervoer: { gedeeld: kies(60000), aangerekend: A, tussenkomstTotaal: kies(5) ? 0 : kies(30000) },
+      activiteit: { gedeeld: o.activiteit.G, perKind: o.activiteit.p, aangerekend: A, betalers, tussenkomstTotaal: o.activiteit.T, tussenkomstPerKind: o.activiteit.t },
+      vervoer: { gedeeld: o.vervoer.G, aangerekend: A, tussenkomstTotaal: o.vervoer.T, tussenkomstPerKind: o.vervoer.t },
     };
     const v = verdeel(invoer);
-    const groepen = [{ profiel: AANWEZIG, aantal: aanwezig }, { profiel: ENKEL_GEDEELD, aantal: afwezig }, { profiel: NIET_AANGEREKEND, aantal: attest }];
+    const groepen = [{ profiel: AANWEZIG, aantal: aanwezig }, { profiel: ENKEL_GEDEELD, aantal: afwezig }, { profiel: NIET_AANGEREKEND, aantal: attest }, { profiel: SCHOOL, aantal: vanSchool }];
+    // Een lege groep, op een willekeurige plaats, wijzigt niets (review 2: R02).
+    groepen.splice(kies(groepen.length + 1), 0, { profiel: [AANWEZIG, ENKEL_GEDEELD, SCHOOL][kies(3)], aantal: 0 });
     const t = totalen(v, groepen);
-    const waar = "ronde " + ronde + ": " + JSON.stringify(invoer);
-    assert.equal(t.kost, invoer.activiteit.gedeeld + invoer.activiteit.perKind * aanwezig + invoer.vervoer.gedeeld, waar);
-    assert.equal(t.ouders, aanwezig * bedrag(v, AANWEZIG).totaal + afwezig * bedrag(v, ENKEL_GEDEELD).totaal, waar);
-    assert.equal(t.school, t.kost - t.tussenkomst - t.ouders, waar);
-    assert.ok(t.tussenkomst <= t.kost, waar + ": de tussenkomsten dragen meer dan de kost");
-    // Zonder attesten voor iedereen is wat de school draagt enkel het afrondingsverschil: hoogstens een halve
-    // cent per aangerekende leerling, plus één cent voor de afronding van de som van de tussenkomsten.
-    if (A > 0) assert.ok(Math.abs(t.school) <= A / 2 + 1, waar + ": de school draagt " + t.school);
-    else assert.equal(t.school, t.kost - t.tussenkomst, waar);
+    const waar = "ronde " + ronde + ": " + JSON.stringify({ invoer, vanSchool });
+
+    // Uit de invoer alleen: de kost, wat de tussenkomsten samen waard zijn, wat ze dragen, en de rest.
+    const a = uitDeInvoer(o.activiteit, A, betalers);
+    const w = uitDeInvoer(o.vervoer, A, 0);
+    const kost = a.kost + w.kost;
+    const beschikbaar = a.beschikbaar + w.beschikbaar;
+    assert.equal(t.kost, kost, waar);
+    assert.equal(t.tussenkomst, Math.min(kost, beschikbaar), waar + ": wat de tussenkomsten dragen");
+    assert.equal(v.overschot.rest, Math.max(0, beschikbaar - kost), waar + ": de rest");
+    assert.equal(v.activiteit.tussenkomst + v.vervoer.tussenkomst, t.tussenkomst, waar);
+    const teBetalen = Math.max(0, kost - beschikbaar);
+
+    // Wat de ouders samen betalen: de bedragen per leerling, voor wie zelf betaalt.
+    const alsof = bedrag(v, AANWEZIG).totaal;
+    assert.equal(t.ouders, aanwezig * alsof + afwezig * bedrag(v, ENKEL_GEDEELD).totaal, waar);
+    assert.deepEqual(bedrag(v, SCHOOL), { activiteit: 0, vervoer: 0, totaal: 0 }, waar);
+    assert.equal(t.school, kost - Math.min(kost, beschikbaar) - t.ouders, waar);
+    if (A === 0) {
+      // Niemand aangerekend: de ouders betalen niets, en de school draagt de kost min de tussenkomsten (B223).
+      assert.equal(t.ouders, 0, waar);
+      assert.equal(t.school, teBetalen, waar);
+      tel.niemand++;
+    } else {
+      // Wat de school draagt voor een leerling, is eerst gewoon berekend: zijn bedrag alsof hij zelf betaalde.
+      // Samen met wat de ouders betalen, is dat de kost min de tussenkomsten, op hoogstens een halve cent per
+      // aangerekende leerling. Geen cent meer: wat de tussenkomsten dragen, is exact (review 2: R01).
+      assert.ok(Math.abs(t.ouders + vanSchool * alsof - teBetalen) * 2 <= A, waar + ": de ouders betalen " + t.ouders);
+      assert.ok(Math.abs(t.school - vanSchool * alsof) * 2 <= A, waar + ": de school draagt " + t.school);
+      if (t.school !== vanSchool * alsof) tel.afronding++;
+    }
+    if (beschikbaar > kost) {
+      assert.equal(t.ouders, 0, waar + ": er blijft een rest terwijl de ouders nog iets betalen");
+      assert.equal(t.school, 0, waar + ": er blijft een rest terwijl de school nog iets draagt");
+      tel.rest++;
+    }
+    if (o.activiteit.t || o.vervoer.t) tel.perKind++;
+    if (vanSchool) tel.school++;
   }
+  for (const [wat, aantal] of Object.entries(tel)) assert.ok(aantal >= 30, "te weinig gevallen (" + wat + "): " + aantal);
+});
+
+Deno.test("wat de tussenkomsten dragen, wordt voor de twee onderdelen samen één keer afgerond: geen cent verdwijnt in twee halve centen (review 2: R01)", () => {
+  // Het tegenvoorbeeld van de review: de activiteit krijgt exact 650,5 cent, het vervoer 49,5 cent.
+  const v = verdeel({ activiteit: { gedeeld: 101, perKind: 600, aangerekend: 2, betalers: 1, tussenkomstPerKind: 700 }, vervoer: { gedeeld: 1000, aangerekend: 2 } });
+  assert.deepEqual(bedrag(v, AANWEZIG), { activiteit: 0, vervoer: 475, totaal: 475 });
+  assert.deepEqual(bedrag(v, ENKEL_GEDEELD), { activiteit: 50, vervoer: 476, totaal: 526 });
+  assert.equal(v.overschot.rest, 0);
+  assert.deepEqual(totalen(v, [{ profiel: AANWEZIG, aantal: 1 }, { profiel: ENKEL_GEDEELD, aantal: 1 }]), { ouders: 1001, kost: 1701, tussenkomst: 700, school: 0 });
+  // Per onderdeel: de activiteit afgerond, het vervoer als het verschil met het afgeronde geheel (zoals B98).
+  assert.deepEqual([v.activiteit.tussenkomst, v.vervoer.tussenkomst], [650, 50]);
+  // Andersom, met de tussenkomst op het vervoer: ook dan samen 700.
+  const om = verdeel({ vervoer: { gedeeld: 101, perKind: 600, aangerekend: 2, betalers: 1, tussenkomstPerKind: 700 }, activiteit: { gedeeld: 1000, aangerekend: 2 } });
+  assert.deepEqual([om.activiteit.tussenkomst, om.vervoer.tussenkomst], [49, 651]);
+  assert.equal(totalen(om, [{ profiel: { activiteit: { aangerekend: true }, vervoer: { aangerekend: true, perKind: true } }, aantal: 1 }, { profiel: ENKEL_GEDEELD, aantal: 1 }]).tussenkomst, 700);
+  // Eén onderdeel alleen, of het andere onbekend: gewoon afgerond.
+  const alleen = verdeel({ activiteit: { gedeeld: 1001, aangerekend: 2, tussenkomstPerKind: 300 } });
+  assert.deepEqual([alleen.activiteit.tussenkomst, alleen.vervoer.tussenkomst], [600, 0]);
+  const enkelVervoer = verdeel({ vervoer: { gedeeld: 1001, aangerekend: 2, tussenkomstTotaal: 300 } });
+  assert.deepEqual([enkelVervoer.activiteit.tussenkomst, enkelVervoer.vervoer.tussenkomst], [0, 300]);
+  const metOnbekend = verdeel({ activiteit: { onbekend: true }, vervoer: { gedeeld: 1000, aangerekend: 3, tussenkomstTotaal: 500 } });
+  assert.deepEqual([metOnbekend.activiteit.tussenkomst, metOnbekend.vervoer.tussenkomst], [null, 500]);
+  const onbekendVervoer = verdeel({ activiteit: { gedeeld: 1000, aangerekend: 3, tussenkomstTotaal: 500 }, vervoer: { onbekend: true } });
+  assert.deepEqual([onbekendVervoer.activiteit.tussenkomst, onbekendVervoer.vervoer.tussenkomst], [500, null]);
+});
+
+Deno.test("een lege groep betaalt niets, en maakt dus niets onbekend (review 2: R02)", () => {
+  const v = verdeel({ activiteit: { onbekend: true } });
+  const echt = [{ profiel: NIET_AANGEREKEND, aantal: 20 }];
+  // Niemand betaalt iets van de onbekende activiteit: de ouders betalen samen € 0, met of zonder de lege groep.
+  assert.deepEqual(totalen(v, echt), { ouders: 0, kost: null, tussenkomst: null, school: null });
+  assert.deepEqual(totalen(v, [{ profiel: AANWEZIG, aantal: 0 }, ...echt]), totalen(v, echt));
+  assert.deepEqual(totalen(v, [...echt, { profiel: ENKEL_GEDEELD, aantal: 0 }, { profiel: AANWEZIG, aantal: 0n }]), totalen(v, echt));
+  // Zit er wel iemand in, dan is het bedrag onbekend.
+  assert.equal(totalen(v, [{ profiel: AANWEZIG, aantal: 1 }, ...echt]).ouders, null);
+  // Een lege groep blijft nagekeken: een aantal dat geen aantal is, is een fout.
+  for (const aantal of [-1, 1.5, "0", null, undefined, NaN]) assert.throws(() => totalen(v, [{ profiel: AANWEZIG, aantal }, ...echt]), /rekenen: het aantal van een groep/, String(aantal));
+  // Ook met gekende prijzen wijzigt een lege groep niets, waar ze ook staat.
+  const gekend = verdeel({ activiteit: { perKind: 800, aangerekend: 40, betalers: 38 }, vervoer: { gedeeld: 20000, aangerekend: 40 } });
+  const groepen = [{ profiel: AANWEZIG, aantal: 38 }, { profiel: ENKEL_GEDEELD, aantal: 2 }];
+  assert.deepEqual(totalen(gekend, [{ profiel: NIET_AANGEREKEND, aantal: 0 }, groepen[0], { profiel: AANWEZIG, aantal: 0 }, groepen[1]]), totalen(gekend, groepen));
+});
+
+Deno.test("niemand aangerekend, met een tussenkomst: ze verlaagt wat de school draagt (B223)", () => {
+  const allen = [{ profiel: NIET_AANGEREKEND, aantal: 22 }];
+  const v = verdeel({ activiteit: { gedeeld: 15000, aangerekend: 0, tussenkomstTotaal: 3000 } });
+  assert.deepEqual(totalen(v, allen), { ouders: 0, kost: 15000, tussenkomst: 3000, school: 12000 });
+  assert.equal(v.overschot.rest, 0);
+  // Groter dan de kost: de school draagt niets, en de rest gaat naar de beheerder.
+  const groot = verdeel({ activiteit: { gedeeld: 15000, aangerekend: 0, tussenkomstTotaal: 20000 } });
+  assert.deepEqual(totalen(groot, allen), { ouders: 0, kost: 15000, tussenkomst: 15000, school: 0 });
+  assert.equal(groot.overschot.rest, 5000);
+  // Wat de activiteit niet opneemt, gaat naar het vervoer, ook als dat wel aangerekend wordt.
+  const metBus = verdeel({ activiteit: { gedeeld: 1000, aangerekend: 0, tussenkomstTotaal: 3000 }, vervoer: { gedeeld: 10000, aangerekend: 20 } });
+  assert.deepEqual(bedrag(metBus, { activiteit: { aangerekend: false }, vervoer: { aangerekend: true } }), { activiteit: 0, vervoer: 400, totaal: 400 });
+  assert.deepEqual([metBus.activiteit.tussenkomst, metBus.vervoer.tussenkomst, metBus.overschot.rest], [1000, 2000, 0]);
+  // Een bedrag per kind heeft geen kind om naartoe te gaan: het verlaagt niets, en is geen rest.
+  const perKind = verdeel({ activiteit: { gedeeld: 15000, aangerekend: 0, tussenkomstPerKind: 500 } });
+  assert.deepEqual(totalen(perKind, allen), { ouders: 0, kost: 15000, tussenkomst: 0, school: 15000 });
+  assert.equal(perKind.overschot.rest, 0);
+});
+
+Deno.test("een tussenkomst als totaal geeft ook korting op het deel dat de school draagt (B224)", () => {
+  // G7d: de bus van € 95,00 voor 42 aangerekende leerlingen, van wie de school er 20 draagt; € 42,00 tussenkomst.
+  const bus = { gedeeld: 9500, aangerekend: 42 };
+  const zonder = verdeel({ vervoer: bus });
+  const met = verdeel({ vervoer: { ...bus, tussenkomstTotaal: 4200 } });
+  const schoolBus = { activiteit: { aangerekend: false }, vervoer: { aangerekend: true, school: true } };
+  const zelf = { activiteit: { aangerekend: false }, vervoer: { aangerekend: true } };
+  const groepen = [{ profiel: schoolBus, aantal: 20 }, { profiel: zelf, aantal: 22 }];
+  assert.deepEqual(totalen(zonder, groepen), { ouders: 4972, kost: 9500, tussenkomst: 0, school: 4528 });
+  assert.deepEqual(totalen(met, groepen), { ouders: 2772, kost: 9500, tussenkomst: 4200, school: 2528 });
+  // De ouders betalen € 22,00 minder en de school € 20,00 minder: elk in verhouding tot zijn deel.
+  assert.equal(bedrag(met, zelf).totaal, 126);
+  assert.deepEqual(bedrag(met, schoolBus), { activiteit: 0, vervoer: 0, totaal: 0 });
 });
 
 Deno.test("G21: het aanrekenbare bedrag is nooit hoger dan het plafond, en nooit hoger dan de werkelijke kost", () => {
@@ -517,4 +699,38 @@ Deno.test("schoolverlater: de laatste periode beslist, en de beheerder kan afwij
 
 Deno.test("de rekenversie is een geheel getal vanaf 1", () => {
   assert.ok(Number.isInteger(REKENVERSIE) && REKENVERSIE >= 1);
+});
+
+// ---------- Het leerjaar en het gratis zwemjaar (review 2: R2-20) ----------
+
+Deno.test("het leerjaar is het eerste teken van de naam van een lagere klas, en nooit een cijfer verderop (B208)", () => {
+  assert.equal(leerjaarVan("4A", "Lager"), 4);
+  assert.equal(leerjaarVan("1instA", "Lager"), 1);
+  assert.equal(leerjaarVan("6B", "Lager"), 6);
+  // Een cijfer dat niet vooraan staat, zegt niets over het leerjaar: de MT vraagt het dan één keer.
+  for (const naam of ["K3", "A4", "Zonneklas 2", "klas5", " 4A", "", null, undefined]) assert.equal(leerjaarVan(naam, "Lager"), null, JSON.stringify(naam));
+  // Enkel 1 tot 6: de lagere school telt zes leerjaren.
+  for (const naam of ["0A", "7A", "8B", "9"]) assert.equal(leerjaarVan(naam, "Lager"), null, naam);
+  // Een kleuterklas of een klas zonder niveau heeft geen leerjaar, wat haar naam ook is.
+  for (const groep of ["Kleuter", "Andere", "", null, undefined]) assert.equal(leerjaarVan("1KA", groep), null, String(groep));
+});
+
+Deno.test("het gratis zwemjaar geldt enkel voor een lagere klas van dat leerjaar, nooit voor een kleuterklas met hetzelfde cijfer (B66, B103)", () => {
+  const jaar = { gratis_zwemjaar_leerjaar: 1 };
+  assert.equal(inGratisZwemjaar({ naam: "1A", groep: "Lager" }, jaar), true);
+  assert.equal(inGratisZwemjaar({ naam: "2A", groep: "Lager" }, jaar), false);
+  // 1KA is een kleuterklas: haar naam begint met 1, maar ze zit niet in het 1ste leerjaar.
+  assert.equal(inGratisZwemjaar({ naam: "1KA", groep: "Kleuter" }, jaar), false);
+  // Ook niet als bij een kleuterklas of een klas zonder niveau toch een leerjaar genoteerd staat.
+  assert.equal(inGratisZwemjaar({ naam: "1KA", groep: "Kleuter", leerjaar: 1 }, jaar), false);
+  assert.equal(inGratisZwemjaar({ naam: "1X", groep: "Andere", leerjaar: 1 }, jaar), false);
+  // Het leerjaar dat bij de klas genoteerd staat, gaat voor op de naam.
+  assert.equal(inGratisZwemjaar({ naam: "Zonneklas", groep: "Lager", leerjaar: 1 }, jaar), true);
+  assert.equal(inGratisZwemjaar({ naam: "1A", groep: "Lager", leerjaar: 2 }, jaar), false);
+  // Zonder gekend leerjaar, of zonder gratis zwemjaar in de instellingen: nooit.
+  assert.equal(inGratisZwemjaar({ naam: "Zonneklas", groep: "Lager" }, jaar), false);
+  for (const zonder of [{}, { gratis_zwemjaar_leerjaar: null }]) {
+    assert.equal(inGratisZwemjaar({ naam: "1A", groep: "Lager" }, zonder), false);
+    assert.equal(inGratisZwemjaar({ naam: "Zonneklas", groep: "Lager" }, zonder), false, "geen leerjaar en geen gratis zwemjaar is geen gratis zwemjaar");
+  }
 });

@@ -1,4 +1,4 @@
-// MT · auth.js · versie 0.7.1
+// MT · auth.js · versie 0.8.0
 // Aanmelden, de tweestapsverificatie en de sessie (17.2, T5). Het enige bestand dat supabase-js
 // gebruikt, en naast app.js het enige dat de opslag van de browser aanraakt. De bibliotheek staat in
 // de eigen repository (code/lib), op één vaste versie (B158); een test bewaakt haar controlesom.
@@ -12,7 +12,7 @@
 //   - anders in sessionStorage: enkel dit tabblad, weg bij het sluiten, en de MT meldt af na een tijd
 //     zonder activiteit.
 
-export const VERSIE = "0.7.1";
+export const VERSIE = "0.8.0";
 
 /** De sleutel van de sessie in de opslag. De MT heeft een eigen adres, dus geen andere tool leest ze (B72). */
 const SLEUTEL = "mt_auth";
@@ -44,8 +44,13 @@ export function maakOpslag(lokaal, tab) {
     kies(blijven) {
       veilig(() => (blijven ? lokaal.setItem(BLIJVEN, "1") : lokaal.removeItem(BLIJVEN)));
     },
-    /** "Aangemeld blijven" mag niet voor deze rol (B148): de sessie verhuist naar dit tabblad. */
-    naarTab() {
+    /**
+     * "Aangemeld blijven" mag niet voor deze rol (B148): de sessie verhuist naar dit tabblad. Het tabblad
+     * krijgt meteen het tijdstip van nu als laatste activiteit: zonder dat zou de MT binnen enkele seconden
+     * afmelden "omdat er te lang niets gebeurde" (review 2: R2-16). Dat hoort bij het verhuizen zelf, zodat
+     * geen oproeper het kan vergeten.
+     */
+    naarTab(nu) {
       veilig(() => {
         const sessie = lokaal.getItem(SLEUTEL);
         lokaal.removeItem(BLIJVEN);
@@ -54,6 +59,7 @@ export function maakOpslag(lokaal, tab) {
           lokaal.removeItem(SLEUTEL);
         }
       });
+      this.raak(nu);
     },
     getItem: (sleutel) => veilig(() => lokaal.getItem(sleutel) ?? tab.getItem(sleutel), null),
     setItem(sleutel, waarde) {
@@ -103,6 +109,42 @@ export function maakOpslag(lokaal, tab) {
 /** Is er te lang niets gebeurd? Zonder gekend tijdstip telt het als te lang: liever een keer te veel afmelden. */
 export function teLangStil(laatste, nu, minuten) {
   return !(laatste > 0) || nu - laatste >= minuten * 60000 || nu < laatste - 60000;
+}
+
+// ---------- Afmelden na een tijd zonder activiteit: de beslissingen (B26, T5; review 1: I4) ----------
+// Zuivere functies, zonder scherm, opslag of klok: app.js geeft mee wat het weet, en doet wat ze zeggen.
+// Zo zijn ze te testen zonder browser (review 2: R2-19).
+
+/** Zo vaak kijkt de MT na of er te lang niets gebeurde: een scherm staat na de slaapstand hoogstens even open (B218). */
+export const STILTE_NAKIJKEN_MS = 5000;
+/** Een klik of een toets verlengt de sessie hoogstens zo vaak: de opslag hoeft niet bij elke toets te schrijven. */
+const VERLENGEN_OM_DE_MS = 15000;
+
+/**
+ * Moet de MT nu afmelden omdat er te lang niets gebeurde? Enkel met een sessie, en enkel zonder
+ * "Aangemeld blijven": op een eigen toestel meldt de MT niet af na een tijd.
+ *   sessie    staat er een sessie in deze browser?
+ *   blijft    staat "Aangemeld blijven" aan?
+ *   laatste   het tijdstip van de laatste activiteit in dit tabblad, in ms; 0 als het niet gekend is
+ *   nu        het tijdstip van nu, in ms
+ *   minuten   na hoeveel minuten de MT afmeldt
+ */
+export function stilteVoorbij({ sessie, blijft, laatste, nu, minuten }) {
+  return Boolean(sessie) && !blijft && teLangStil(laatste, nu, minuten);
+}
+
+/**
+ * Wat een teken van activiteit doet: een klik, een toets, scrollen.
+ *   "afmelden"   de vorige termijn is al om, bv. na de slaapstand: deze klik verlengt de sessie niet, ze
+ *                meldt af (review 1: I4)
+ *   "verlengen"  de activiteit telt: het tijdstip van nu wordt het tijdstip van de laatste activiteit
+ *   "niets"      er is in de laatste vijftien seconden al verlengd
+ * vorige is het tijdstip waarop deze pagina laatst verlengde, in ms; 0 als ze dat nog niet deed.
+ */
+export function bijActiviteit({ sessie, blijft, laatste, nu, minuten, vorige }) {
+  if (nu - vorige < VERLENGEN_OM_DE_MS) return "niets";
+  if (stilteVoorbij({ sessie, blijft, laatste, nu, minuten })) return "afmelden";
+  return "verlengen";
 }
 
 /** De code uit de app: zes cijfers. Spaties ertussen mogen, zoals sommige apps ze tonen. */
@@ -280,7 +322,7 @@ export function opAfgemeld(actie) {
 /** Staat er een sessie in deze browser? Zonder netwerk. */
 export const heeftSessie = () => (opslag ? opslag.heeftSessie() : false);
 export const blijft = () => (opslag ? opslag.blijft() : false);
-export const naarTab = () => (opslag ? opslag.naarTab() : undefined);
+export const naarTab = (nu = Date.now()) => (opslag ? opslag.naarTab(nu) : undefined);
 export const raak = (nu = Date.now()) => (opslag ? opslag.raak(nu) : undefined);
 export const laatste = () => (opslag ? opslag.laatste() : 0);
 

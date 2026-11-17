@@ -111,9 +111,32 @@ Deno.test("de CSP laat scripts enkel toe van het eigen adres, zonder unsafe-inli
   assert.deepEqual(regels.get("form-action"), ["'none'"]);
 });
 
-Deno.test("de CSP verbindt enkel met het eigen adres en de projecten van config.js", () => {
-  const verwacht = new Set(["'self'", UITSTAPPENTOOL.url, ...alleOmgevingen().map((o) => o.mt.url)]);
+Deno.test("de CSP verbindt enkel met het eigen adres en het eigen project van elke omgeving in config.js", () => {
+  const verwacht = new Set(["'self'", ...alleOmgevingen().map((o) => o.mt.url)]);
   assert.deepEqual(new Set(csp().get("connect-src")), verwacht);
+});
+
+Deno.test("de pagina mag niet verbinden met de uitstappentool: enkel de serverfunctie leest ze (review 2: R2-14)", () => {
+  // In de uitstappentool mag iedereen met de publishable key een aanvraag toevoegen. Mocht er ooit een fout
+  // in de MT zitten waardoor vreemde code draait, dan kan die daar niets wegschrijven: de browser weigert
+  // elke verbinding met dat project.
+  const verbindt = csp().get("connect-src");
+  assert.equal(verbindt.includes(UITSTAPPENTOOL.url), false, "de CSP laat de pagina weer verbinden met de uitstappentool");
+  assert.equal(verbindt.some((adres) => adres.includes("*")), false, "de CSP laat een hele reeks adressen toe");
+  assert.equal(alleOmgevingen().some((o) => o.mt.url === UITSTAPPENTOOL.url), false);
+  // Geen module van de pagina kent het adres of de sleutel van de uitstappentool, behalve config.js zelf.
+  for (const pad of paginaModules()) {
+    if (naamVan(pad) === "config.js") continue;
+    const bron = lees(pad);
+    assert.doesNotMatch(bron, /\bUITSTAPPENTOOL\b/, pad + " gebruikt het adres van de uitstappentool");
+    assert.equal(bron.includes(new URL(UITSTAPPENTOOL.url).host), false, pad + " bevat het adres van de uitstappentool");
+    assert.equal(bron.includes(UITSTAPPENTOOL.sleutel), false, pad + " bevat de sleutel van de uitstappentool");
+  }
+  // adapter.js blijft een module van de pagina, maar geen andere module laadt hem: enkel de serverfunctie leest ermee.
+  for (const pad of paginaModules()) {
+    if (naamVan(pad) === "app.js") continue;
+    assert.doesNotMatch(lees(pad), /from\s+["']\.\/adapter\.js["']/, pad + " importeert adapter.js");
+  }
 });
 
 Deno.test("index.html: noindex, geen referrer, en een taal", () => {

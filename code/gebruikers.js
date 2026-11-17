@@ -1,4 +1,4 @@
-// MT · gebruikers.js · versie 0.7.1
+// MT · gebruikers.js · versie 0.8.0
 // Het scherm Gebruikers (3, 15, B165, B170; canvas: bord "Gebruikers"): iedereen die kan aanmelden,
 // met de rol, de klassen per schooljaar en de stand van het account. Enkel voor een beheerder.
 //
@@ -15,7 +15,7 @@ import * as data from "./data.js";
 import { ACCOUNTFUNCTIE, ACCOUNTFUNCTIE_VERSIE, SCHOOLDOMEIN } from "./config.js";
 import { bevries, datumEnUur, html, knopBezig, meld, venster, vraag, zet } from "./ui.js";
 
-export const VERSIE = "0.7.1";
+export const VERSIE = "0.8.0";
 
 // ---------- Zonder browser te testen ----------
 
@@ -258,9 +258,9 @@ export function start({ deel, ik, terug, herstart }) {
           "herstel_wachtwoord", "herstel_app", "revisie"],
         volgorde: ["naam", "id"], rol: "beheerder",
       }),
-      data.lees("schooljaren", { kolommen: ["schooljaar", "stand"], volgorde: ["schooljaar"], rol: "beheerder" }),
+      data.lees("schooljaren", { kolommen: ["schooljaar", "stand"], volgorde: ["schooljaar"], sleutel: ["schooljaar"], rol: "beheerder" }),
       data.lees("klassen", { kolommen: ["id", "schooljaar", "bron_id", "naam", "groep", "leerjaar", "actief", "volgorde"], volgorde: ["schooljaar", "volgorde", "naam", "id"], rol: "beheerder" }),
-      data.lees("klastoewijzingen", { kolommen: ["gebruiker_id", "klas_id", "schooljaar"], volgorde: ["gebruiker_id", "klas_id"], rol: "beheerder" }),
+      data.lees("klastoewijzingen", { kolommen: ["gebruiker_id", "klas_id", "schooljaar"], volgorde: ["gebruiker_id", "klas_id"], sleutel: ["gebruiker_id", "klas_id"], rol: "beheerder" }),
       data.rpc("mt_account_afwijkingen"),
       data.serverfunctie("stand"),
     ]);

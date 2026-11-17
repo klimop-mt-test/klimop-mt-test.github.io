@@ -1,4 +1,4 @@
-// MT · config.js · versie 0.7.1
+// MT · config.js · versie 0.8.0
 // De adressen en sleutels per omgeving (17.1). De omgeving, test of productie, volgt uit het adres
 // van de pagina; een onbekend adres start niet.
 //
@@ -6,7 +6,7 @@
 // apikey mee (design system 1.13). Nooit een secret key (sb_secret_…) of een oude sleutel (eyJ…)
 // in dit bestand of elders in de repository: een test bewaakt dat.
 
-export const VERSIE = "0.7.1";
+export const VERSIE = "0.8.0";
 
 /** De MT per adres van de pagina. De productie komt erbij bij de livegang. */
 const OMGEVINGEN = Object.freeze({
@@ -23,8 +23,10 @@ const OMGEVINGEN = Object.freeze({
 });
 
 /**
- * De uitstappentool (project klimop-software): enkel lezen, via adapter.js (B14, T1). De pagina leest om
- * te tonen; de serverfunctie mt-uitstappen leest om de MT bij te werken, met dezelfde gegevens (B212).
+ * De uitstappentool (project klimop-software): enkel lezen, via adapter.js (B14, T1). Sinds 0.8.0 leest
+ * enkel de serverfunctie mt-uitstappen ze (B212): de pagina toont wat die functie las, en maakt zelf geen
+ * verbinding met dat project (review 2). Dit adres staat hier als de ene plaats waar het vastligt: een
+ * test gaat na dat de serverfunctie precies dit project leest, met deze sleutel.
  */
 export const UITSTAPPENTOOL = Object.freeze({
   url: "https://vmvxawjfryaijkhhnnyr.supabase.co",
@@ -39,13 +41,13 @@ export const ACCOUNTFUNCTIE = "mt-accounts";
  * van de levering waarin ze laatst wijzigde: enkel dan plakt Pablo ze opnieuw in Supabase. Staat er in
  * Supabase een andere versie, dan zegt de MT dat.
  */
-export const ACCOUNTFUNCTIE_VERSIE = "0.6.0";
+export const ACCOUNTFUNCTIE_VERSIE = "0.8.0";
 
 /** De serverfunctie voor de uitstappen (functies/mt-uitstappen): ze leest de uitstappentool en werkt de MT bij (17.4, B212). */
 export const UITSTAPFUNCTIE = "mt-uitstappen";
 
 /** De versie van die serverfunctie die deze versie van de MT verwacht, zoals bij de accounts. */
-export const UITSTAPFUNCTIE_VERSIE = "0.7.1";
+export const UITSTAPFUNCTIE_VERSIE = "0.8.0";
 
 /** Het domein van de e-mailadressen van de school. Een ander adres mag, maar de MT vraagt het eerst na. */
 export const SCHOOLDOMEIN = "klimopvilvoorde.be";

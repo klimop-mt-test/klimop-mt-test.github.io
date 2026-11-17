@@ -1,4 +1,4 @@
-// MT · functies/mt-accounts/index.ts · versie 0.6.0
+// MT · functies/mt-accounts/index.ts · versie 0.8.0
 // De serverfunctie voor de accounts (17.4, B25, T5): een Edge Function in het Supabase-project van de MT.
 //
 // Waarom ze bestaat. Supabase bewaart de wachtwoorden en de app-koppelingen. Een wachtwoord instellen
@@ -32,11 +32,16 @@
 //   - een verzoek blijft onder de dertig seconden die de pagina wacht. Geeft Supabase geen antwoord,
 //     dan zegt de functie dat de uitkomst niet bekend is: geen antwoord is geen "niet gebeurd".
 //
+// Sinds 0.8.0 (review 2, hoofdstuk 73 van het ontwerpdocument):
+//   - lukte de handeling bij Supabase, maar bevestigt de databank van de MT het einde niet, dan is de
+//     uitkomst niet bekend, en zegt de functie dat: het scherm kijkt dan zelf de stand na;
+//   - ook het einde in de databank blijft binnen de dertig seconden van de pagina.
+//
 // Zo plaats je ze: Supabase → project → Edge Functions → Deploy a new function → Via Editor → de
 // naam mt-accounts → dit hele bestand plakken → Deploy function. "Verify JWT" blijft aan staan.
 // Wijzigt dit bestand, dan plak je het opnieuw. Test en productie krijgen hetzelfde bestand.
 
-export const VERSIE = "0.6.0";
+export const VERSIE = "0.8.0";
 
 /**
  * De pagina van de MT per project van Supabase. Enkel dat adres mag deze functie vanuit een browser
@@ -66,9 +71,13 @@ export interface Omgeving {
   nu: () => number;
 }
 
-/** Wat bij één verzoek hoort: tot wanneer de functie nog iets nieuws bij Supabase begint. */
+/**
+ * Wat bij één verzoek hoort: tot wanneer de functie nog iets nieuws bij Supabase begint (tot), en tot
+ * wanneer ze het einde van de handeling nog in de databank zet (slot).
+ */
 interface Beurt {
   tot: number;
+  slot: number;
 }
 
 interface Wie {
@@ -91,8 +100,13 @@ class Fout extends Error {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Eén oproep naar Supabase wacht hoogstens zo lang. */
 const WACHTTIJD = 8_000;
-/** Een heel verzoek blijft onder de dertig seconden die de pagina wacht (data.js). */
-const TIJD_PER_VERZOEK = 24_000;
+/**
+ * Een heel verzoek blijft onder de dertig seconden die de pagina wacht (data.js): eerst de handeling zelf,
+ * daarna nog het einde in de databank. Een test bewaakt die som (review 2: R2-18).
+ */
+const TIJD_PER_VERZOEK = 18_000;
+/** Is de tijd van het verzoek om, dan krijgt het einde in de databank nog zo lang: wat bij Supabase gebeurde, hoort in de databank. */
+const TIJD_VOOR_EINDE = 9_000;
 const MAX_INVOER = 4_000;
 /** Een wachtwoord langer dan 72 bytes kapt Supabase af. */
 const MAX_WACHTWOORD_BYTES = 72;
@@ -102,6 +116,7 @@ const TEKENS = "abcdefghjkmnpqrstuvwxyz23456789";
 const VOORGOED = "876000h";
 const LATER = "Supabase antwoordt niet. Probeer het over enkele minuten opnieuw.";
 const ONBEKEND = "Supabase gaf geen antwoord: de uitkomst is niet bekend. Kijk de stand van het account na, en herhaal de handeling als dat nodig is.";
+const ONBEKEND_EINDE = "De handeling is bij Supabase uitgevoerd, maar de databank van de MT bevestigde het einde niet: de uitkomst is niet bekend. Kijk de stand van het account na, en herhaal de handeling als dat nodig is.";
 
 const BEHEER = new Set(["aanmaken", "tijdelijk_wachtwoord", "uitschakelen", "inschakelen", "email_wijzigen"]);
 const EIGEN = new Set(["stand", "wachtwoord_kiezen", "afronden"]);
@@ -132,10 +147,10 @@ export function maakBehandelaar(o: Omgeving): (verzoek: Request) => Promise<Resp
   /**
    * Eén oproep naar het eigen project. Geeft de status en het antwoord; status 0 is geen antwoord.
    * Een omleiding wordt nooit gevolgd: de sleutel in de kop gaat enkel naar het eigen project (V2, O12).
-   * Met een beurt begint de oproep niet meer als de tijd van het verzoek om is; zonder beurt altijd.
+   * De oproep begint niet meer als zijn tijd om is, en wacht nooit langer dan tot dan.
    */
-  async function roep(beurt: Beurt | null, pad: string, methode: string, sleutel: string, drager: string | null, lichaam?: Json): Promise<{ status: number; gegevens: unknown }> {
-    const tijd = beurt === null ? WACHTTIJD : Math.min(WACHTTIJD, beurt.tot - o.nu());
+  async function roep(beurt: { tot: number }, pad: string, methode: string, sleutel: string, drager: string | null, lichaam?: Json): Promise<{ status: number; gegevens: unknown }> {
+    const tijd = Math.min(WACHTTIJD, beurt.tot - o.nu());
     if (tijd < 250) return { status: 0, gegevens: null };
     const k: Record<string, string> = { apikey: sleutel, Accept: "application/json" };
     if (drager !== null) k.Authorization = "Bearer " + drager;
@@ -170,7 +185,7 @@ export function maakBehandelaar(o: Omgeving): (verzoek: Request) => Promise<Resp
   const beheer = (beurt: Beurt, pad: string, methode: string, lichaam?: Json) => roep(beurt, "/auth/v1" + pad, methode, o.geheim, o.geheim, lichaam);
 
   /** Een databankfunctie. Met een toegangsbewijs: als die gebruiker. Zonder: als de serverfunctie. */
-  async function databank(beurt: Beurt | null, functie: string, args: Json, token: string | null): Promise<Json> {
+  async function databank(beurt: { tot: number }, functie: string, args: Json, token: string | null): Promise<Json> {
     const r = token === null
       ? await roep(beurt, "/rest/v1/rpc/" + functie, "POST", o.geheim, o.geheim, args)
       : await roep(beurt, "/rest/v1/rpc/" + functie, "POST", o.publiek, token, args);
@@ -194,26 +209,40 @@ export function maakBehandelaar(o: Omgeving): (verzoek: Request) => Promise<Resp
    * keer: de handeling bij Supabase is dan al gebeurd, en zonder dit einde blijft het account geblokkeerd.
    * Herhalen mag: ging enkel het antwoord verloren, dan geeft de databank hetzelfde antwoord opnieuw (I2).
    * Het einde loopt ook als de tijd van het verzoek om is: wat bij Supabase gebeurde, hoort in de databank.
+   * Het krijgt daarvoor een eigen, begrensde tijd (beurt.slot), zodat de pagina altijd een antwoord krijgt
+   * (review 2: R2-18).
+   *
+   * Lukte de handeling bij Supabase en bevestigt de databank het einde niet, dan is de uitkomst niet
+   * bekend: het account kan er helemaal staan. De functie zegt dat (onbekend), en nooit "mislukt": het
+   * scherm kijkt dan zelf de stand na (review 2: R08).
    */
-  async function rondAf(operatie: string, gelukt: boolean, gegevens: Json = {}, melding: string | null = null): Promise<Json> {
+  async function rondAf(beurt: Beurt, operatie: string, gelukt: boolean, gegevens: Json = {}, melding: string | null = null): Promise<Json> {
+    const einde = { tot: beurt.slot };
     let laatste: unknown = null;
     for (let poging = 0; poging < 3; poging++) {
-      if (poging > 0) await o.wacht(400 * poging);
+      if (poging > 0) {
+        // Geen tijd meer voor nog een poging: de functie antwoordt, binnen wat de pagina wacht.
+        if (einde.tot - o.nu() < 400 * poging + 250) break;
+        await o.wacht(400 * poging);
+      }
       try {
-        return await databank(null, "mt_account_klaar", { p_operatie: operatie, p_gelukt: gelukt, p_gegevens: gegevens, p_melding: melding }, null);
+        return await databank(einde, "mt_account_klaar", { p_operatie: operatie, p_gelukt: gelukt, p_gegevens: gegevens, p_melding: melding }, null);
       } catch (fout) {
         laatste = fout;
         if (!(fout instanceof Fout) || fout.code !== "databank") break;
       }
     }
+    if (gelukt && laatste instanceof Fout && laatste.code === "databank") {
+      throw new Fout(503, "databank", ONBEKEND_EINDE, { onbekend: true, geblokkeerd: true });
+    }
     throw laatste;
   }
 
   /** De handeling mislukte bij Supabase: dat komt in het register. Daarna gaat de fout naar de pagina. */
-  async function mislukt(operatie: string, melding: string, fout: Fout): Promise<never> {
+  async function mislukt(beurt: Beurt, operatie: string, melding: string, fout: Fout): Promise<never> {
     let geblokkeerd = false;
     try {
-      const r = await rondAf(operatie, false, {}, melding);
+      const r = await rondAf(beurt, operatie, false, {}, melding);
       geblokkeerd = r.geblokkeerd === true;
     } catch {
       geblokkeerd = true;
@@ -346,24 +375,34 @@ export function maakBehandelaar(o: Omgeving): (verzoek: Request) => Promise<Resp
     const zelfde = await roep(beurt, "/auth/v1/token?grant_type=password", "POST", o.publiek, null, { email: wie.email, password: nieuw });
     if (zelfde.status === 200) {
       const sessie = (zelfde.gegevens ?? {}) as { access_token?: unknown };
-      if (typeof sessie.access_token === "string") await roep(null, "/auth/v1/logout?scope=local", "POST", o.publiek, sessie.access_token);
-      await mislukt(operatie, "Het gekozen wachtwoord was het tijdelijke.", new Fout(422, "kan_niet", "Kies een ander wachtwoord dan je tijdelijke wachtwoord."));
+      if (typeof sessie.access_token === "string") await roep({ tot: beurt.slot }, "/auth/v1/logout?scope=local", "POST", o.publiek, sessie.access_token);
+      await mislukt(beurt, operatie, "Het gekozen wachtwoord was het tijdelijke.", new Fout(422, "kan_niet", "Kies een ander wachtwoord dan je tijdelijke wachtwoord."));
     }
     if (zelfde.status !== 400 || foutcode(zelfde) !== "invalid_credentials") {
-      await mislukt(operatie, reden(zelfde), new Fout(503, "supabase", LATER));
+      await mislukt(beurt, operatie, reden(zelfde), new Fout(503, "supabase", LATER));
     }
 
     const r = await beheer(beurt, "/admin/users/" + wie.id, "PUT", { password: nieuw });
     if (r.status !== 200) {
       const zwak = foutcode(r) === "weak_password";
       // Zonder antwoord is niet zeker of het nieuwe wachtwoord bewaard is: de pagina zegt wat dan te doen (O13).
-      await mislukt(operatie, reden(r), zwak
+      await mislukt(beurt, operatie, reden(r), zwak
         ? new Fout(422, "kan_niet", "Supabase vindt dit wachtwoord te zwak. Kies een langer wachtwoord, of een dat minder voor de hand ligt.")
         : r.status === 0
         ? new Fout(503, "supabase", "Supabase gaf geen antwoord: het is niet zeker of je nieuwe wachtwoord bewaard is. Meld opnieuw aan: eerst met je nieuwe wachtwoord, en lukt dat niet, met je tijdelijke.", { onbekend: true })
         : new Fout(502, "supabase", LATER));
     }
-    await rondAf(operatie, true);
+    try {
+      await rondAf(beurt, operatie, true);
+    } catch (fout) {
+      // Het nieuwe wachtwoord staat bij Supabase; enkel het einde in de databank ontbreekt. Wie aanmeldt, leest
+      // wat hij dan doet: de zin voor een beheerder past hier niet (review 2: R08).
+      if (fout instanceof Fout && fout.extra.onbekend === true) {
+        throw new Fout(503, "databank", "Je nieuwe wachtwoord is bewaard, maar de MT kon dat nog niet afronden. Meld over enkele minuten opnieuw aan, met je nieuwe wachtwoord: "
+          + "de MT vraagt je dan misschien nog één keer om een wachtwoord te kiezen.", fout.extra);
+      }
+      throw fout;
+    }
     // Supabase beëindigde alle sessies van dit account: de pagina meldt opnieuw aan, met het nieuwe wachtwoord.
     return { opnieuw_aanmelden: true };
   }
@@ -409,15 +448,15 @@ export function maakBehandelaar(o: Omgeving): (verzoek: Request) => Promise<Resp
     }
     if (gebruiker === null || !UUID.test(gebruiker)) {
       const bestaat = r.status === 422 && foutcode(r) === "email_exists";
-      await mislukt(operatie, reden(r), bestaat
+      await mislukt(beurt, operatie, reden(r), bestaat
         ? new Fout(409, "gewijzigd", "Bij Supabase bestaat intussen een account met dit e-mailadres. Probeer het opnieuw.")
         : nietGelukt(r, "Supabase maakte het account niet aan. Probeer het opnieuw."));
     }
     let klaar: Json;
     try {
-      klaar = await rondAf(operatie, true, { gebruiker });
+      klaar = await rondAf(beurt, operatie, true, { gebruiker });
     } catch (fout) {
-      if (fout instanceof Fout && fout.code === "kan_niet") await mislukt(operatie, fout.message, fout);
+      if (fout instanceof Fout && fout.code === "kan_niet") await mislukt(beurt, operatie, fout.message, fout);
       throw fout;
     }
     return { gebruiker: klaar.gebruiker, email, wachtwoord, geldig_tot: klaar.tijdelijk_tot ?? null, uren: start.uren ?? null };
@@ -432,12 +471,12 @@ export function maakBehandelaar(o: Omgeving): (verzoek: Request) => Promise<Resp
     const wachtwoord = tijdelijkWachtwoord();
     // Eerst het wachtwoord: Supabase beëindigt daarmee alle sessies van het account (T5). Dan de koppelingen.
     const r = await beheer(beurt, "/admin/users/" + gebruiker, "PUT", soort === "inschakelen" ? { password: wachtwoord, ban_duration: "none" } : { password: wachtwoord });
-    if (r.status !== 200) await mislukt(operatie, reden(r), nietGelukt(r, "Supabase stelde het wachtwoord niet in."));
+    if (r.status !== 200) await mislukt(beurt, operatie, reden(r), nietGelukt(r, "Supabase stelde het wachtwoord niet in."));
     // Wat de databank teruggaf, telt: moest de app na een vorige poging nog opnieuw, dan ook nu (B2).
     if (start.app_wissen === true && !(await wisKoppelingen(beurt, gebruiker))) {
-      await mislukt(operatie, "De app-koppeling werd niet volledig gewist.", new Fout(502, "supabase", "Supabase wiste de app-koppeling niet."));
+      await mislukt(beurt, operatie, "De app-koppeling werd niet volledig gewist.", new Fout(502, "supabase", "Supabase wiste de app-koppeling niet."));
     }
-    const klaar = await rondAf(operatie, true);
+    const klaar = await rondAf(beurt, operatie, true);
     return { gebruiker, wachtwoord, app_gewist: start.app_wissen === true, geldig_tot: klaar.tijdelijk_tot ?? null, uren: start.uren ?? null };
   }
 
@@ -448,8 +487,8 @@ export function maakBehandelaar(o: Omgeving): (verzoek: Request) => Promise<Resp
     // daarmee beëindigt Supabase alle sessies.
     await databank(beurt, "mt_account_start", { p_operatie: operatie, p_soort: "uitschakelen", p_voor: gebruiker, p_gegevens: {} }, wie.token);
     const r = await beheer(beurt, "/admin/users/" + gebruiker, "PUT", { ban_duration: VOORGOED, password: onbekendWachtwoord() });
-    if (r.status !== 200) await mislukt(operatie, reden(r), nietGelukt(r, "Supabase trok de sessies niet in."));
-    await rondAf(operatie, true);
+    if (r.status !== 200) await mislukt(beurt, operatie, reden(r), nietGelukt(r, "Supabase trok de sessies niet in."));
+    await rondAf(beurt, operatie, true);
     return { gebruiker };
   }
 
@@ -465,11 +504,11 @@ export function maakBehandelaar(o: Omgeving): (verzoek: Request) => Promise<Resp
     const r = await beheer(beurt, "/admin/users/" + gebruiker, "PUT", { email, email_confirm: true });
     if (r.status !== 200) {
       const bestaat = foutcode(r) === "email_exists";
-      await mislukt(operatie, reden(r), bestaat
+      await mislukt(beurt, operatie, reden(r), bestaat
         ? new Fout(422, "kan_niet", "Bij Supabase bestaat al een account met dit e-mailadres.")
         : nietGelukt(r, "Supabase wijzigde het e-mailadres niet."));
     }
-    await rondAf(operatie, true);
+    await rondAf(beurt, operatie, true);
     return { gebruiker, email };
   }
 
@@ -502,7 +541,8 @@ export function maakBehandelaar(o: Omgeving): (verzoek: Request) => Promise<Resp
         throw new Fout(400, "oproep", "Deze oproep klopt niet.");
       }
       actie = invoer.actie;
-      const beurt: Beurt = { tot: o.nu() + TIJD_PER_VERZOEK };
+      const begin = o.nu();
+      const beurt: Beurt = { tot: begin + TIJD_PER_VERZOEK, slot: begin + TIJD_PER_VERZOEK + TIJD_VOOR_EINDE };
       const wie = await wieIsDit(beurt, verzoek);
 
       let uit: Json;

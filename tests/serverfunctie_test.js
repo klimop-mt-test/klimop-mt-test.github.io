@@ -745,6 +745,8 @@ Deno.test("het einde van een handeling: bij een storing van de databank nog twee
   const weg = await s.vraag(s.beheerder, { actie: "tijdelijk_wachtwoord", operatie: OP(2), gebruiker: ID(2) });
   assert.equal(weg.status, 503);
   assert.equal(weg.lichaam.wachtwoord, undefined);
+  // Het wachtwoord is bij Supabase al ingesteld: de uitkomst is niet bekend, en nooit "mislukt" (review 2: R08).
+  assert.deepEqual([weg.lichaam.onbekend, weg.lichaam.geblokkeerd], [true, true]);
   assert.equal(s.mt.get(ID(2)).open, OP(2));
 });
 
@@ -834,4 +836,180 @@ Deno.test("een tijdelijk wachtwoord: zestien tekens in vier groepjes, zonder tek
   assert.doesNotMatch(tekens, /[01ilo]/, "een teken dat op een ander lijkt");
   assert.equal(new Set(tekens).size, 31);
   assert.match(bron, /byte < 248/, "zonder deze grens komen de eerste tekens vaker voor");
+});
+
+// ---------- Review 2: het einde dat niet bevestigd wordt (R08), en de tijd (R2-18) ----------
+
+Deno.test("het einde van een handeling: gaan alle antwoorden verloren, dan is de uitkomst niet bekend, en nooit \"mislukt\" (review 2: R08)", async () => {
+  // Het tegenvoorbeeld van de review: het account is gemaakt, en de databank rondde af, maar geen enkel
+  // antwoord van mt_account_klaar kwam aan.
+  const s = school();
+  let keer = 0;
+  s.verlies = (o) => o.pad === "/rest/v1/rpc/mt_account_klaar" && ++keer > 0;
+  const r = await s.vraag(s.beheerder, { actie: "aanmaken", operatie: OP(1), naam: "Review Twee", email: "review2@voorbeeld.test", rol: "lezer" });
+  assert.equal([...s.mt.values()].filter((g) => g.email === "review2@voorbeeld.test").length, 1, "het account bestaat werkelijk");
+  assert.equal(s.ops.get(OP(1)).resultaat, "gelukt");
+  assert.equal(keer, 3, "het einde werd niet drie keer geprobeerd");
+  assert.deepEqual(r, {
+    status: 503,
+    lichaam: {
+      ok: false, code: "databank", onbekend: true, geblokkeerd: true,
+      melding: "De handeling is bij Supabase uitgevoerd, maar de databank van de MT bevestigde het einde niet: de uitkomst is niet bekend. Kijk de stand van het account na, en herhaal de handeling als dat nodig is.",
+    },
+    koppen: r.koppen,
+  });
+  // Het tijdelijke wachtwoord staat nergens: de beheerder geeft een nieuw.
+  s.geenGeheimen(s.auth.get([...s.auth.values()].find((a) => a.email === "review2@voorbeeld.test").id).wachtwoord);
+
+  // Ook als de databank het einde niet uitvoerde: de handeling bij Supabase is gebeurd, dus de stand is niet bekend.
+  for (const antwoord of [() => new Response("{}", { status: 503 }), () => new Response('{"code":"57014","message":"canceling statement"}', { status: 500 }), () => "weg"]) {
+    for (const [actie, extra] of [["tijdelijk_wachtwoord", {}], ["uitschakelen", {}], ["email_wijzigen", { email: "anders@voorbeeld.test" }], ["inschakelen", {}]]) {
+      const t = school();
+      // Inschakelen kan enkel voor een account dat uitgeschakeld is.
+      if (actie === "inschakelen") assert.equal((await t.vraag(t.beheerder, { actie: "uitschakelen", operatie: OP(9), gebruiker: ID(2) })).status, 200);
+      t.storing = (o) => (o.pad === "/rest/v1/rpc/mt_account_klaar" ? antwoord() : null);
+      const u = await t.vraag(t.beheerder, { actie, operatie: OP(1), gebruiker: ID(2), ...extra });
+      assert.deepEqual([u.status, u.lichaam.code, u.lichaam.onbekend, u.lichaam.geblokkeerd], [503, "databank", true, true], actie + ": " + JSON.stringify(u.lichaam));
+      assert.equal(u.lichaam.wachtwoord, undefined, actie);
+      assert.equal(padenVan(t).filter((pad) => pad.endsWith("mt_account_klaar")).length, actie === "inschakelen" ? 4 : 3, actie + ": het einde werd niet drie keer geprobeerd");
+    }
+  }
+});
+
+Deno.test("het einde van een handeling: een zeker antwoord van de databank blijft wat het is, en een mislukking bij Supabase wordt niet \"onbekend\" (review 2: R08)", async () => {
+  // De handeling mislukte bij Supabase, en ook het register is onbereikbaar: de fout van Supabase gaat naar de
+  // pagina, met "geblokkeerd", en niet als onbekende uitkomst.
+  const s = school();
+  s.storing = (o) => (o.methode === "PUT" ? new Response('{"error_code":"unexpected_failure"}', { status: 500 }) : o.pad === "/rest/v1/rpc/mt_account_klaar" ? "weg" : null);
+  const r = await s.vraag(s.beheerder, { actie: "tijdelijk_wachtwoord", operatie: OP(1), gebruiker: ID(2) });
+  assert.deepEqual([r.status, r.lichaam.code, r.lichaam.onbekend, r.lichaam.geblokkeerd], [502, "supabase", undefined, true], JSON.stringify(r.lichaam));
+  // Gaf Supabase zelf geen antwoord, dan was de uitkomst al onbekend: dat blijft zo.
+  const t = school();
+  t.storing = (o) => (o.methode === "PUT" || o.pad === "/rest/v1/rpc/mt_account_klaar" ? "weg" : null);
+  const u = await t.vraag(t.beheerder, { actie: "tijdelijk_wachtwoord", operatie: OP(1), gebruiker: ID(2) });
+  assert.deepEqual([u.status, u.lichaam.code, u.lichaam.onbekend, u.lichaam.geblokkeerd], [503, "supabase", true, true], JSON.stringify(u.lichaam));
+  // Weigert de databank het einde met een eigen reden, dan gaat die reden naar de pagina.
+  const w = school();
+  w.storing = (o) => (o.pad === "/rest/v1/rpc/mt_account_klaar" ? new Response('{"code":"MT409","message":"MT: deze handeling is al afgerond"}', { status: 400 }) : null);
+  const v = await w.vraag(w.beheerder, { actie: "uitschakelen", operatie: OP(1), gebruiker: ID(2) });
+  assert.deepEqual([v.status, v.lichaam.code, v.lichaam.onbekend], [409, "gewijzigd", undefined], JSON.stringify(v.lichaam));
+});
+
+Deno.test("eigen wachtwoord: is het bewaard maar het einde niet bevestigd, dan leest wie aanmeldt wat hij doet (review 2: R08)", async () => {
+  const s = nep();
+  s.account(3, "nieuw@voorbeeld.test", "tijdelijk-wachtwoord", { tijdelijk: true, tot: s.nu + 3600e3, eerste: false, app: true });
+  s.storing = (o) => (o.pad === "/rest/v1/rpc/mt_account_klaar" ? "weg" : null);
+  const r = await s.vraag(s.sessie(3, "aal1", ["password"]), { actie: "wachtwoord_kiezen", operatie: OP(1), wachtwoord: "een heel eigen wachtwoord" });
+  assert.equal(s.auth.get(ID(3)).wachtwoord, "een heel eigen wachtwoord", "het nieuwe wachtwoord staat bij Supabase");
+  assert.deepEqual([r.status, r.lichaam.code, r.lichaam.onbekend], [503, "databank", true], JSON.stringify(r.lichaam));
+  assert.equal(r.lichaam.melding, "Je nieuwe wachtwoord is bewaard, maar de MT kon dat nog niet afronden. Meld over enkele minuten opnieuw aan, met je nieuwe wachtwoord: de MT vraagt je dan misschien nog één keer om een wachtwoord te kiezen.");
+  s.geenGeheimen("een heel eigen wachtwoord");
+});
+
+/**
+ * Een verzoek waarbij elke oproep naar Supabase die past, pas afloopt als zijn tijd om is: zo traag kan het
+ * hoogstens gaan. De klok van de nabootsing loopt mee, ook tijdens het wachten tussen twee pogingen.
+ */
+async function traag(s, token, lichaam, isTraag) {
+  const echt = AbortSignal.timeout;
+  let toegestaan = 0;
+  AbortSignal.timeout = (ms) => ((toegestaan = ms), echt.call(AbortSignal, ms));
+  const begin = s.nu;
+  s.storing = (o) => {
+    if (!isTraag(o)) return null;
+    s.nu += toegestaan;
+    return "weg";
+  };
+  s.behandel = maakBehandelaar({
+    url: URL_MT, publiek: PUBLIEK, geheim: GEHEIM, haal: s.haal, meld: () => {}, willekeurig: (aantal) => crypto.getRandomValues(new Uint8Array(aantal)), nu: () => s.nu,
+    wacht: (ms) => ((s.nu += ms), Promise.resolve()),
+  });
+  try {
+    const r = await s.vraag(token, lichaam);
+    return { r, duur: s.nu - begin };
+  } finally {
+    AbortSignal.timeout = echt;
+  }
+}
+
+Deno.test("een verzoek blijft onder de dertig seconden van de pagina, ook met het einde in de databank erbij (review 2: R2-18)", async () => {
+  // De pagina wacht dertig seconden op een serverfunctie (data.js). Hoe traag Supabase ook is: de functie antwoordt eerder.
+  const WACHT_PAGINA = Number(/const WACHTTIJD_SERVER = (\d+);/.exec(lees("code/data.js"))[1]);
+  assert.equal(WACHT_PAGINA, 30000);
+  const grens = WACHT_PAGINA - 2500;
+  const gevallen = [
+    ["elke oproep", () => true],
+    ["alles na het nakijken van de aanmelding", (o) => o.pad !== "/auth/v1/user"],
+    ["het wachtwoord en het einde", (o) => o.methode === "PUT" || o.pad === "/rest/v1/rpc/mt_account_klaar"],
+    ["enkel het einde", (o) => o.pad === "/rest/v1/rpc/mt_account_klaar"],
+    ["de koppelingen en het einde", (o) => o.pad.includes("/factors") || o.pad === "/rest/v1/rpc/mt_account_klaar"],
+  ];
+  let langste = 0;
+  for (const [wat, isTraag] of gevallen) {
+    for (const [actie, extra] of [["tijdelijk_wachtwoord", { app_wissen: true }], ["aanmaken", { naam: "Trage Proef", email: "traag@voorbeeld.test", rol: "lezer" }], ["uitschakelen", {}], ["email_wijzigen", { email: "later@voorbeeld.test" }]]) {
+      const s = school();
+      const { r, duur } = await traag(s, s.beheerder, { actie, operatie: OP(1), gebruiker: ID(2), ...extra }, isTraag);
+      assert.equal(r.lichaam.ok, false, wat + ", " + actie);
+      assert.ok(duur <= grens, wat + ", " + actie + ": de functie antwoordde pas na " + duur / 1000 + " seconden");
+      langste = Math.max(langste, duur);
+    }
+  }
+  // De proef raakt de grens ook echt: het traagste geval gebruikt bijna alle tijd.
+  assert.ok(langste > 20000, "het traagste geval duurde maar " + langste / 1000 + " seconden: de proef test de grens niet");
+  // Ook het eigen wachtwoord, met de proefaanmelding en het afmelden ervan.
+  const n = nep();
+  n.account(3, "nieuw@voorbeeld.test", "tijdelijk-wachtwoord", { tijdelijk: true, tot: n.nu + 3600e3, eerste: false, app: true });
+  const eigen = await traag(n, n.sessie(3, "aal1", ["password"]), { actie: "wachtwoord_kiezen", operatie: OP(1), wachtwoord: "tijdelijk-wachtwoord" }, (o) => o.pad.startsWith("/auth/v1/logout") || o.pad === "/rest/v1/rpc/mt_account_klaar");
+  assert.ok(eigen.duur <= grens, "het eigen wachtwoord: " + eigen.duur / 1000 + " seconden");
+  // De getallen zelf: de handeling en het einde samen, met marge onder wat de pagina wacht.
+  const bron = lees("functies/mt-accounts/index.ts");
+  const getal = (naam) => Number(new RegExp("const " + naam + " = ([0-9_]+);").exec(bron)[1].replaceAll("_", ""));
+  assert.ok(getal("TIJD_PER_VERZOEK") + getal("TIJD_VOOR_EINDE") <= grens, "de tijd van een verzoek en van het einde samen is te lang voor de pagina");
+  assert.ok(getal("WACHTTIJD") <= getal("TIJD_VOOR_EINDE"), "het einde krijgt minder tijd dan één oproep nodig kan hebben");
+});
+
+Deno.test("het einde van een handeling loopt ook als de tijd van het verzoek om is, maar nooit eindeloos (review 2: R2-18)", async () => {
+  // Supabase stelt het wachtwoord in, en doet daar twintig seconden over: de tijd van het verzoek is om.
+  const s = school();
+  s.storing = (o) => {
+    if (o.methode === "PUT") s.nu += 20_000;
+    return null;
+  };
+  const r = await s.vraag(s.beheerder, { actie: "tijdelijk_wachtwoord", operatie: OP(1), gebruiker: ID(2) });
+  // Het einde kwam nog in de databank: de handeling is gelukt, en het wachtwoord komt terug.
+  assert.equal(r.status, 200, JSON.stringify(r.lichaam));
+  assert.equal(s.ops.get(OP(1)).resultaat, "gelukt");
+  // Na de tijd van het verzoek én van het einde begint de functie niets meer: ook het einde niet.
+  const t = school();
+  t.storing = (o) => {
+    if (o.methode === "PUT") t.nu += 28_000;
+    return null;
+  };
+  const u = await t.vraag(t.beheerder, { actie: "tijdelijk_wachtwoord", operatie: OP(1), gebruiker: ID(2) });
+  assert.deepEqual([u.status, u.lichaam.onbekend, u.lichaam.geblokkeerd], [503, true, true], JSON.stringify(u.lichaam));
+  assert.equal(padenVan(t).filter((pad) => pad.endsWith("mt_account_klaar")).length, 0, "na alle tijd begon de functie nog aan het einde");
+  assert.equal(t.mt.get(ID(2)).open, OP(1), "het account blijft geblokkeerd tot de beheerder het nakijkt");
+  // Blijft er nog een tiende van een seconde, dan begint de functie er ook niet meer aan: zo'n oproep haalt
+  // het antwoord niet, en zou de uitkomst alleen maar onzekerder maken.
+  const v = school();
+  const begin = v.nu;
+  const alles = Number(/const TIJD_PER_VERZOEK = ([0-9_]+);/.exec(lees("functies/mt-accounts/index.ts"))[1].replaceAll("_", ""))
+    + Number(/const TIJD_VOOR_EINDE = ([0-9_]+);/.exec(lees("functies/mt-accounts/index.ts"))[1].replaceAll("_", ""));
+  v.storing = (o) => {
+    if (o.methode === "PUT") v.nu = begin + alles - 100;
+    return null;
+  };
+  const w = await v.vraag(v.beheerder, { actie: "tijdelijk_wachtwoord", operatie: OP(1), gebruiker: ID(2) });
+  assert.deepEqual([w.status, w.lichaam.onbekend, w.lichaam.geblokkeerd], [503, true, true], JSON.stringify(w.lichaam));
+  assert.equal(padenVan(v).filter((pad) => pad.endsWith("mt_account_klaar")).length, 0, "met een tiende van een seconde over begon de functie nog aan het einde");
+});
+
+Deno.test("het toegangsbewijs telt enkel als Supabase het aanvaardt: een ander antwoord dan 200 is geen aanmelding, ook met een id erin (review 2: R2-20)", async () => {
+  for (const status of [201, 206, 400, 401, 403, 404]) {
+    const s = school();
+    s.storing = (o) => (o.pad === "/auth/v1/user" ? new Response(JSON.stringify({ id: ID(1), email: "beheerder@voorbeeld.test" }), { status }) : null);
+    const r = await s.vraag(s.beheerder, { actie: "stand" });
+    assert.deepEqual([r.status, r.lichaam.code], [401, "sessie"], "status " + status);
+    assert.deepEqual(padenVan(s), ["GET /auth/v1/user"], "na een geweigerd toegangsbewijs ging de functie toch verder");
+  }
 });

@@ -1,5 +1,5 @@
-// MT · rekentest.js · versie 0.7.1
-// De testgevallen van het rekencontract (mt-rekencontract.md, versie 19, deel 2), met het verwachte en
+// MT · rekentest.js · versie 0.8.0
+// De testgevallen van het rekencontract (mt-rekencontract.md, versie 20, deel 2), met het verwachte en
 // het berekende bedrag: de testpagina van 17.1. Wat hier staat, is fase 1: A1, A2, A6, G1 tot G9,
 // G11a, G11c, G12 en G18 tot G20. De gevallen van de facturatie en de voorschotten volgen in fase 2,
 // die van de meerdaagse uitstappen in fase 3. De controle over alle gevallen (G21) draait met
@@ -16,7 +16,7 @@ import {
 } from "./rekenen.js";
 import { euro, html, zet } from "./ui.js";
 
-export const VERSIE = "0.7.1";
+export const VERSIE = "0.8.0";
 
 // ---------- Zonder browser te testen ----------
 
@@ -114,10 +114,21 @@ const LIJST = [
   ["G4", "Niemand aangerekend", "1.4", () => {
     const v = verdeel({ activiteit: { gedeeld: 6600, aangerekend: 0 }, vervoer: { gedeeld: 14000, aangerekend: 0 } });
     const perKind = verdeel({ activiteit: { perKind: 300, aangerekend: 0, betalers: 0 }, vervoer: { gedeeld: 14000, aangerekend: 0 } });
+    // b: een activiteit van € 150,00 zonder vervoer, met een tussenkomst (B223).
+    const allen = [{ profiel: NIET_AANGEREKEND, aantal: 22 }];
+    const metTotaal = verdeel({ activiteit: { gedeeld: 15000, aangerekend: 0, tussenkomstTotaal: 3000 } });
+    const teGroot = verdeel({ activiteit: { gedeeld: 15000, aangerekend: 0, tussenkomstTotaal: 20000 } });
+    const metPerKind = verdeel({ activiteit: { gedeeld: 15000, aangerekend: 0, tussenkomstPerKind: 500 } });
     return [
-      geld("Alle 22 met een attest: geen deling door nul", bedrag(v, NIET_AANGEREKEND), NIETS),
-      geld("De volle € 206,00 is voor de school", totalen(v, [{ profiel: NIET_AANGEREKEND, aantal: 22 }]), sommen(0, 20600, 0, 20600)),
-      geld("Met een prijs per kind van € 3,00 en niemand aanwezig", bedrag(perKind, NIET_AANGEREKEND), NIETS),
+      geld("a. Alle 22 met een attest: geen deling door nul", bedrag(v, NIET_AANGEREKEND), NIETS),
+      geld("a. De volle € 206,00 is voor de school", totalen(v, allen), sommen(0, 20600, 0, 20600)),
+      geld("a. Met een prijs per kind van € 3,00 en niemand aanwezig", bedrag(perKind, NIET_AANGEREKEND), NIETS),
+      geld("b. Een activiteit van € 150,00 met een tussenkomst van € 30,00: niemand betaalt", bedrag(metTotaal, NIET_AANGEREKEND), NIETS),
+      geld("b. De tussenkomst verlaagt wat de school draagt: 150,00 − 30,00", totalen(metTotaal, allen), sommen(0, 15000, 3000, 12000)),
+      geld("b. Van de tussenkomst blijft niets over", metTotaal.overschot.rest, 0),
+      geld("b. Een tussenkomst van € 200,00 is groter dan de kost: de school draagt niets", totalen(teGroot, allen), sommen(0, 15000, 15000, 0)),
+      geld("b. En € 50,00 blijft over", teGroot.overschot.rest, 5000),
+      geld("b. Een tussenkomst van € 5,00 per kind: er is geen kind om ze voor te krijgen", totalen(metPerKind, allen), sommen(0, 15000, 0, 15000)),
     ];
   }],
   ["G5", "Tussenkomst", "1.5", () => {
@@ -139,6 +150,9 @@ const LIJST = [
     const gKleineBus = verdeel({ activiteit: g, vervoer: { gedeeld: 1000, aangerekend: 20 } });
     const gGroteBus = verdeel({ activiteit: g, vervoer: { gedeeld: 30000, aangerekend: 20 } });
     const gIedereen = verdeel({ activiteit: { ...g, betalers: 20 } });
+    // h: twee leerlingen, één aanwezig en één briefje ouders. Toegang € 6,00 per kind en € 1,01 voor de groep;
+    // een bus van € 10,00; € 7,00 per kind voor de activiteit. De bedragen zijn gekozen om op twee halve centen uit te komen.
+    const h = verdeel({ activiteit: { gedeeld: 101, perKind: 600, aangerekend: 2, betalers: 1, tussenkomstPerKind: 700 }, vervoer: { gedeeld: 1000, aangerekend: 2 } });
     return [
       geld("a. € 200,00 van de bus, aanwezig: 4,00 + (330,00 − 200,00) / 47 = 6,7659…", bedrag(a, AANWEZIG), bedragen(400, 277, 677)),
       geld("a. Briefje ouders: 2,7659…", bedrag(a, ENKEL_GEDEELD), bedragen(0, 277, 277)),
@@ -170,6 +184,11 @@ const LIJST = [
       geld("g. Met een bus van € 300,00 gaat alles naar de bus, aanwezig: (300,00 − 15,00) / 20", bedrag(gGroteBus, AANWEZIG), bedragen(0, 1425, 1425)),
       geld("g. Met een bus van € 300,00, briefje ouders: 2,50 + 14,25", bedrag(gGroteBus, ENKEL_GEDEELD), bedragen(250, 1425, 1675)),
       geld("g. Iedereen aanwezig, zonder vervoer: de tussenkomst (€ 200,00) is groter dan de kost (€ 170,00), dus € 30,00 blijft over", gIedereen.overschot, { vanActiviteit: 3000, vanVervoer: 0, terugActiviteit: 0, terugVervoer: 0, rest: 3000 }),
+      geld("h. Aanwezig: 6,00 + 0,505 − 7,00 wordt € 0,00; de bus: (10,00 − 0,495) / 2 = 4,7525", bedrag(h, AANWEZIG), bedragen(0, 475, 475)),
+      geld("h. Briefje ouders: 0,505 + 4,7525 = 5,2575", bedrag(h, ENKEL_GEDEELD), bedragen(50, 476, 526)),
+      geld("h. De tussenkomst van € 7,00 is volledig gebruikt: € 6,505 voor de activiteit en € 0,495 voor de bus, samen één keer afgerond",
+        { activiteit: h.activiteit.tussenkomst, vervoer: h.vervoer.tussenkomst, rest: h.overschot.rest }, { activiteit: 650, vervoer: 50, rest: 0 }),
+      geld("h. Samen: de kost van € 17,01 is de tussenkomst van € 7,00 plus de € 10,01 van de ouders", totalen(h, [{ profiel: AANWEZIG, aantal: 1 }, { profiel: ENKEL_GEDEELD, aantal: 1 }]), sommen(1001, 1701, 700, 0)),
     ];
   }],
   ["G6", "Annulering met kosten", "1.7", () => {
@@ -205,6 +224,8 @@ const LIJST = [
     const tweede = [{ profiel: AANWEZIG, aantal: 21 }, { profiel: ENKEL_GEDEELD, aantal: 1 }];
     const attest = { profiel: NIET_AANGEREKEND, aantal: 1 };
     const nietDoor = verdeel({ activiteit: { gedeeld: 4000, aangerekend: 21 } });
+    // d: zoals b, met een tussenkomst van € 42,00 voor de bus (B224).
+    const metTussenkomst = verdeel({ activiteit: { perKind: 210, aangerekend: 22, betalers: 21 }, vervoer: { ...bus, tussenkomstTotaal: 4200 } });
     return [
       geld("a. Bus aangerekend aan de ouders. 1A, aanwezig of briefje ouders: 95,00 / 42 = 2,261…", bedrag(zonder, eersteBusOuders), bedragen(0, 226, 226)),
       geld("a. 1A, attest", bedrag(zonder, NIET_AANGEREKEND), NIETS),
@@ -222,6 +243,11 @@ const LIJST = [
       geld("c. De school gaat niet; het zwembad rekent € 40,00 aan: 40,00 / 21 = 1,9047…", bedrag(nietDoor, AANWEZIG), bedragen(190, 0, 190)),
       geld("c. De leerling met een attest", bedrag(nietDoor, NIET_AANGEREKEND), NIETS),
       geld("c. Samen € 39,90: de school draagt € 0,10", totalen(nietDoor, [{ profiel: AANWEZIG, aantal: 21 }, attest]), sommen(3990, 4000, 0, 10)),
+      geld("d. Een tussenkomst van € 42,00 voor de bus. 2A, aanwezig: 2,10 + (95,00 − 42,00) / 42 = 3,3619…", bedrag(metTussenkomst, AANWEZIG), bedragen(210, 126, 336)),
+      geld("d. 2A, ongewettigd afwezig: 1,2619…", bedrag(metTussenkomst, ENKEL_GEDEELD), bedragen(0, 126, 126)),
+      geld("d. 1A, bus voor de school: iedereen", bedrag(metTussenkomst, eersteBusSchool), NIETS),
+      geld("d. Ook het deel van de school krijgt de korting: de ouders betalen € 22,00 minder (71,82 in plaats van 93,82), de school € 20,00 minder (25,28 in plaats van 45,28)",
+        totalen(metTussenkomst, [{ profiel: eersteBusSchool, aantal: 20 }, attest, ...tweede]), sommen(7182, 13910, 4200, 2528)),
     ];
   }],
   ["G8", "Prijs nog te bevestigen", "1.3, 1.8", () => {
@@ -372,7 +398,7 @@ export function start({ deel, terug }) {
     </div>
     <p class="${t.afwijkend ? "form-alert mt-melding" : "finfo mt-melding"}" role="status">${t.afwijkend
       ? t.afwijkend + " van de " + t.controles + " controles wijken af. Meld dit: de MT rekent dan niet zoals het rekencontract."
-      : "Alle " + t.controles + " controles in " + t.gevallen + " gevallen kloppen met het rekencontract (versie 19, rekenversie " + REKENVERSIE + ")."}</p>
+      : "Alle " + t.controles + " controles in " + t.gevallen + " gevallen kloppen met het rekencontract (versie 20, rekenversie " + REKENVERSIE + ")."}</p>
     ${gevallen.map((geval) => html`
       <section class="card mt-geval" aria-label="${"Geval " + geval.nr}">
         <div class="mt-gevalkop">

@@ -47,10 +47,12 @@ Deno.test("opslag: mag aangemeld blijven niet voor de rol, dan verhuist de sessi
   const o = auth.maakOpslag(lokaal, tab);
   o.kies(true);
   o.setItem("mt_auth", "sessie");
-  o.naarTab();
+  o.naarTab(1234567);
   assert.equal(o.blijft(), false);
   assert.equal(tab.m.get("mt_auth"), "sessie");
   assert.equal(lokaal.m.size, 0);
+  // Het tabblad krijgt meteen een tijdstip van activiteit (review 2: R2-16).
+  assert.equal(tab.m.get("mt_auth_actief"), "1234567");
   o.setItem("mt_auth", "ververst");
   assert.equal(lokaal.m.size, 0, "een ververst toegangsbewijs kwam weer blijvend in de browser");
 });
@@ -276,4 +278,92 @@ Deno.test("afmelden: een ander tabblad hoort het, via supabase-js of doordat de 
   assert.equal(gehoord, 0, "een vernieuwde sessie of een andere sleutel is geen afmelding");
   meld("mt_auth", null);
   assert.equal(gehoord, 1);
+});
+
+// ---------- Review 2: het tabblad, en de beslissingen van het afmelden na stilte ----------
+
+Deno.test("naar het tabblad: de sessie verhuist, en het tabblad krijgt meteen het tijdstip van nu (review 2: R2-16)", () => {
+  const lokaal = opslag(), tab = opslag();
+  const o = auth.maakOpslag(lokaal, tab);
+  o.kies(true);
+  o.setItem("mt_auth", "sessie");
+  // Een onthouden sessie in een nieuw tabblad: dat tabblad kent nog geen activiteit.
+  assert.equal(o.laatste(), 0);
+  const nu = Date.parse("2026-11-16T09:00:00Z");
+  o.naarTab(nu);
+  assert.equal(o.laatste(), nu, "zonder dit tijdstip meldt de MT binnen vijf seconden af");
+  // Het besluit dat app.js om de vijf seconden neemt, enkele seconden later: niet afmelden.
+  assert.equal(auth.stilteVoorbij({ sessie: o.heeftSessie(), blijft: o.blijft(), laatste: o.laatste(), nu: nu + 5000, minuten: 30 }), false);
+  // Zonder dat tijdstip zou het besluit "afmelden" zijn: dat was de fout.
+  assert.equal(auth.stilteVoorbij({ sessie: true, blijft: false, laatste: 0, nu: nu + 5000, minuten: 30 }), true);
+});
+
+Deno.test("naar het tabblad: via auth.naarTab(), langs beide wegen van het aanmeldscherm (review 2: R2-16, R2-19)", async () => {
+  const s = bibliotheek(), lokaal = opslag(), tab = opslag();
+  auth.stel(OMGEVING, { lib: s.lib, lokaal, tab });
+  await auth.aanmelden("proef@voorbeeld.test", "juist wachtwoord", true);
+  assert.equal(auth.blijft(), true);
+  // Een nieuw tabblad met de onthouden sessie: daar is nog geen activiteit bekend.
+  tab.m.delete("mt_auth_actief");
+  assert.equal(auth.laatste(), 0);
+  const voor = Date.now();
+  auth.naarTab();
+  assert.equal(auth.blijft(), false);
+  assert.equal(tab.m.get("mt_auth"), "sessie");
+  assert.ok(auth.laatste() >= voor, "naarTab() zette geen tijdstip van activiteit");
+  // Het aanmeldscherm roept op beide plaatsen enkel naarTab() op: het tijdstip hoort bij het verhuizen zelf.
+  const scherm = Deno.readTextFileSync(new URL("../code/aanmelden.js", import.meta.url));
+  assert.equal([...scherm.matchAll(/auth\.naarTab\(\)/g)].length, 2, "het aanmeldscherm verhuist de sessie op twee plaatsen");
+  assert.doesNotMatch(scherm, /opslag\.naarTab|naarTab\([^)]/, "het aanmeldscherm hoort naarTab() zonder omweg op te roepen");
+});
+
+Deno.test("afmelden na stilte: enkel met een sessie, en enkel zonder \"Aangemeld blijven\" (review 2: R2-19)", () => {
+  const min = 60000;
+  const nu = 5000 * min;
+  const basis = { sessie: true, blijft: false, laatste: nu - 31 * min, nu, minuten: 30 };
+  assert.equal(auth.stilteVoorbij(basis), true);
+  assert.equal(auth.stilteVoorbij({ ...basis, laatste: nu - 29 * min }), false);
+  assert.equal(auth.stilteVoorbij({ ...basis, minuten: 60 }), false, "de instelling van de MT telt");
+  assert.equal(auth.stilteVoorbij({ ...basis, blijft: true }), false, "op een eigen toestel meldt de MT niet af na een tijd");
+  assert.equal(auth.stilteVoorbij({ ...basis, sessie: false }), false, "wie niet aangemeld is, wordt niet afgemeld");
+  assert.equal(auth.stilteVoorbij({ ...basis, laatste: 0 }), true, "zonder gekend tijdstip: liever een keer te veel afmelden");
+  // Om de vijf seconden: zo staat een scherm na de slaapstand hoogstens even open (B218).
+  assert.equal(auth.STILTE_NAKIJKEN_MS, 5000);
+});
+
+Deno.test("een klik na een lange pauze meldt af, en verlengt de sessie niet (review 1: I4; review 2: R2-19)", () => {
+  const min = 60000;
+  const nu = 5000 * min;
+  const basis = { sessie: true, blijft: false, laatste: nu - 10 * min, nu, minuten: 30, vorige: 0 };
+  // Gewone activiteit: het tijdstip van nu wordt bewaard.
+  assert.equal(auth.bijActiviteit(basis), "verlengen");
+  // Na een lange pauze, bv. de slaapstand: de eerste klik meldt af. Dat mag nooit "verlengen" zijn.
+  assert.equal(auth.bijActiviteit({ ...basis, laatste: nu - 45 * min }), "afmelden");
+  assert.equal(auth.bijActiviteit({ ...basis, laatste: nu - 30 * min }), "afmelden", "precies op de termijn");
+  assert.equal(auth.bijActiviteit({ ...basis, laatste: 0 }), "afmelden");
+  // Ook als deze pagina zelf al lang niet meer verlengde.
+  assert.equal(auth.bijActiviteit({ ...basis, laatste: nu - 45 * min, vorige: nu - 45 * min }), "afmelden");
+  // Hoogstens één keer per vijftien seconden schrijft de MT het tijdstip weg.
+  assert.equal(auth.bijActiviteit({ ...basis, vorige: nu - 14000 }), "niets");
+  assert.equal(auth.bijActiviteit({ ...basis, vorige: nu - 15000 }), "verlengen");
+  // Met "Aangemeld blijven", of zonder sessie, meldt een klik nooit af.
+  assert.equal(auth.bijActiviteit({ ...basis, laatste: nu - 45 * min, blijft: true }), "verlengen");
+  assert.equal(auth.bijActiviteit({ ...basis, laatste: nu - 45 * min, sessie: false }), "verlengen");
+});
+
+Deno.test("afmelden: na afmeldenLokaal() bewaart de opslag van de aanmelding niets meer, ook geen sessie die nog onderweg was (review 2: R2-19)", async () => {
+  const s = bibliotheek(), lokaal = opslag(), tab = opslag();
+  auth.stel(OMGEVING, { lib: s.lib, lokaal, tab });
+  await auth.aanmelden("proef@voorbeeld.test", "juist wachtwoord", false);
+  assert.equal(auth.heeftSessie(), true);
+  auth.afmeldenLokaal(null);
+  assert.equal(auth.heeftSessie(), false);
+  // supabase-js schrijft via de opslag die de MT haar gaf: een verversing die nog liep, komt er niet meer in.
+  const kast = s.opties.auth.storage;
+  kast.setItem("mt_auth", '{"access_token":"x.y.z"}');
+  kast.setItem("mt_auth-user", "{}");
+  auth.raak(Date.now());
+  assert.equal(auth.heeftSessie(), false, "na het afmelden kwam de sessie terug in de opslag");
+  assert.deepEqual([...lokaal.m.keys(), ...tab.m.keys()], [], "na het afmelden staat er nog iets van de aanmelding in de browser");
+  assert.equal(auth.laatste(), 0);
 });

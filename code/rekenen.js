@@ -1,5 +1,5 @@
-// MT · rekenen.js · versie 0.7.1
-// Het rekencontract (mt-rekencontract.md, versie 19): hoe de MT rekent, tot op de cent. De nummers in
+// MT · rekenen.js · versie 0.8.0
+// Het rekencontract (mt-rekencontract.md, versie 20): hoe de MT rekent, tot op de cent. De nummers in
 // dit bestand, zoals 1.16 of G5e, verwijzen naar dat contract.
 //
 // Regel 1 (17.1): dit bestand importeert niets, en kent geen scherm, netwerk, browseropslag of klok.
@@ -11,21 +11,22 @@
 //   - onderweg rekent het exact, met breuken van gehele getallen: geen kommagetallen en geen
 //     tussentijdse afronding;
 //   - afronden gebeurt één keer per leerling en per activiteit (B98), naar de dichtstbijzijnde cent,
-//     tot en met de halve cent naar beneden (B97).
+//     tot en met de halve cent naar beneden (B97). Ook wat de tussenkomsten dragen, wordt voor de twee
+//     onderdelen samen één keer afgerond (review 2).
 //
 // Wat hier staat, is fase 1: verdelen (1.4), tussenkomsten (1.5), wat de school draagt (1.6, 1.15),
 // wie meetelt (1.2), het plafond per leerling (1.11), een correctie verdelen (1.10) en de stand van
 // een bedrag (1.8). De facturatie, de voorschotten en het rapport volgen in fase 2; minder scherp en
 // de credits van een meerdaagse in fase 3.
 
-export const VERSIE = "0.7.1";
+export const VERSIE = "0.8.0";
 
 /**
  * De rekenversie (17.1): gaat omhoog bij elke wijziging aan dit bestand of aan adapter.js die een
  * uitkomst kan wijzigen, en staat later in elke momentopname. Een test weigert een wijziging zonder
  * nieuwe rekenversie (tests/rekenversie_test.js).
  */
-export const REKENVERSIE = 2;
+export const REKENVERSIE = 3;
 
 // ---------- Exact rekenen met breuken ----------
 
@@ -171,7 +172,9 @@ function leesOnderdeel(o, naam) {
 function voorTotaal(o) {
   const kost = breuk(o.G + o.p * o.B);
   if (o.A === 0n) {
-    // Niemand aangerekend: de kost is voor de school. Geen deling door nul (1.4, G4).
+    // Niemand aangerekend: de kost is voor de school. Geen deling door nul (1.4, G4). Een tussenkomst als
+    // totaal verlaagt dan wat de school draagt (1.5, B223, G4b); een tussenkomst per kind heeft niemand
+    // om naartoe te gaan.
     return { betaler: NUL, enkelGedeeld: NUL, ruimte: kost, overschotPerKind: NUL, perKindGebruikt: NUL, kost };
   }
   const deel = breuk(o.G, o.A);
@@ -247,17 +250,19 @@ export function verdeel({ activiteit = null, vervoer = null } = {}) {
   }
   const intern = {};
   const zichtbaar = {};
+  // Wat de tussenkomsten van elk onderdeel dragen, exact: de eigen, wat van het andere onderdeel overkwam, en wat terugkeerde.
+  const gedragen = { activiteit: null, vervoer: null };
   for (const naam of ["activiteit", "vervoer"]) {
     const o = invoer[naam];
     if (o === null) {
       intern[naam] = { bestaat: false, onbekend: false, betaler: NUL, enkelGedeeld: NUL };
-      zichtbaar[naam] = Object.freeze({ bestaat: false, bekend: true, kost: 0, tussenkomst: 0, aangerekend: 0, betalers: 0 });
+      zichtbaar[naam] = { bestaat: false, bekend: true, kost: 0, tussenkomst: 0, aangerekend: 0, betalers: 0 };
       continue;
     }
     if (o.onbekend) {
       // Onbekend: geen bedrag, en wat hierheen zou komen, wacht tot de prijs gekend is.
       intern[naam] = { bestaat: true, onbekend: true, betaler: NUL, enkelGedeeld: NUL };
-      zichtbaar[naam] = Object.freeze({ bestaat: true, bekend: false, kost: null, tussenkomst: null, aangerekend: null, betalers: null });
+      zichtbaar[naam] = { bestaat: true, bekend: false, kost: null, tussenkomst: null, aangerekend: null, betalers: null };
       continue;
     }
     const s = stap[naam];
@@ -265,16 +270,19 @@ export function verdeel({ activiteit = null, vervoer = null } = {}) {
     // Elk bedrag van het onderdeel daalt in dezelfde verhouding (B91).
     const factor = isNul(s.ruimte) ? NUL : gedeeldDoor(blijft, s.ruimte);
     intern[naam] = { bestaat: true, onbekend: false, betaler: maal(s.betaler, factor), enkelGedeeld: maal(s.enkelGedeeld, factor), A: s.o.A, B: s.o.B, metPrijsPerKind: s.o.p > 0n };
-    zichtbaar[naam] = Object.freeze({
-      bestaat: true,
-      bekend: true,
-      kost: rond(s.kost),
-      // wat de tussenkomsten van dit onderdeel dragen: de eigen, wat van het andere onderdeel overkwam, en wat terugkeerde
-      tussenkomst: rond(plus(plus(plus(s.perKindGebruikt, s.eigen), neemt[naam]), terug[naam])),
-      aangerekend: alsGetal(s.o.A),
-      betalers: alsGetal(s.o.B),
-    });
+    gedragen[naam] = plus(plus(plus(s.perKindGebruikt, s.eigen), neemt[naam]), terug[naam]);
+    zichtbaar[naam] = { bestaat: true, bekend: true, kost: rond(s.kost), tussenkomst: 0, aangerekend: alsGetal(s.o.A), betalers: alsGetal(s.o.B) };
   }
+  // Wat de tussenkomsten dragen, in hele centen (1.5; review 2: R01). De twee onderdelen worden exact opgeteld
+  // en samen één keer afgerond, zoals het bedrag van een leerling (B98): de activiteit staat er afgerond, en het
+  // vervoer is het verschil met het afgeronde geheel. Zo tellen de twee altijd op tot wat de tussenkomsten
+  // samen dragen, en verdwijnt er nooit een cent in twee halve centen.
+  if (gedragen.activiteit) zichtbaar.activiteit.tussenkomst = rond(gedragen.activiteit);
+  if (gedragen.vervoer) {
+    zichtbaar.vervoer.tussenkomst = gedragen.activiteit ? rond(plus(gedragen.activiteit, gedragen.vervoer)) - zichtbaar.activiteit.tussenkomst : rond(gedragen.vervoer);
+  }
+  Object.freeze(zichtbaar.activiteit);
+  Object.freeze(zichtbaar.vervoer);
   const onbekend = intern.activiteit.onbekend || intern.vervoer.onbekend;
   const uit = Object.freeze({
     activiteit: zichtbaar.activiteit,
@@ -343,7 +351,7 @@ export function bedrag(verdeling, wie) {
  * Geeft, in centen:
  *   ouders       wat de ouders samen betalen, na de afronding per leerling
  *   kost         wat de activiteit kost: de gedeelde kosten en de prijs per kind voor wie die betaalt
- *   tussenkomst  wat de tussenkomsten dragen
+ *   tussenkomst  wat de tussenkomsten dragen, voor de twee onderdelen samen één keer afgerond
  *   school       wat de school draagt: kost − tussenkomst − ouders. Positief of negatief: het
  *                afrondingsverschil is voor of van de school (1.1), en ook wat niemand betaalt
  * Is een onderdeel onbekend, dan zijn de kost, de tussenkomst en het deel van de school null: nooit
@@ -358,6 +366,8 @@ export function totalen(verdeling, groepen) {
   let onbekend = false;
   for (const groep of groepen) {
     const aantal = nietNegatief(groep.aantal, "het aantal van een groep");
+    // Een lege groep betaalt niets, en maakt dus ook niets onbekend (review 2: R02).
+    if (aantal === 0n) continue;
     for (const naam of ["activiteit", "vervoer"]) {
       const deel = leesDeel(groep.profiel && groep.profiel[naam]);
       if (deel.aangerekend) tel[naam].A += aantal;

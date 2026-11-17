@@ -1,4 +1,4 @@
-// MT · adapter.js · versie 0.7.1
+// MT · adapter.js · versie 0.8.0
 // De uitstappentool lezen (hoofdstuk 4 en 17.1 van de huidige stand; T1, V20, V22, B212).
 //
 // Regel 2 (17.1): dit bestand leest de uitstappentool enkel over het netwerk, met de functie die het
@@ -9,8 +9,8 @@
 //     staat daar woord voor woord in; een test bewaakt dat.
 //
 // De vaste volgorde van T1:
-//   1. alles ophalen, in bladzijden, met een vaste volgorde en het totaal van de databank erbij.
-//      Mislukt een bladzijde of klopt het totaal niet, dan is er geen lijst: nooit een lege of halve;
+//   1. alles ophalen, in bladzijden: telkens verder vanaf de laatste id, met het totaal van de databank
+//      erbij. Mislukt een bladzijde of ontbreekt het totaal, dan is er geen lijst: nooit een lege of halve;
 //   2. de ruwe schemaversie nakijken, vóór norm(): norm() zet de versie zelf altijd op 2;
 //   3. een eigen kopie normaliseren, met norm() woord voor woord uit de uitstappentool;
 //   4. vergelijken met wat de MT al kent: dat doet de databank zelf (mt_uitstappen_bijwerken), met
@@ -21,7 +21,7 @@
 // Wat een uitstap kost, vertaalt kostenVoorMT() naar het rekencontract (1.3): een gedeelde kost, een
 // prijs per kind, of onbekend. Een prijs die ontbreekt, is nooit € 0 (B80).
 
-export const VERSIE = "0.7.1";
+export const VERSIE = "0.8.0";
 
 // ==== adapter: gedeeld met de serverfunctie ====
 
@@ -30,7 +30,7 @@ export const VERSIE = "0.7.1";
  * wijziging aan rekenen.js of aan dit bestand die een uitkomst kan wijzigen. De serverfunctie meldt
  * haar rekenversie aan de pagina: verschilt ze, dan staat in Supabase een oudere serverfunctie.
  */
-export const REKENVERSIE = 2;
+export const REKENVERSIE = 3;
 
 /** De ruwe schemaversies van de uitstappentool die de MT begrijpt (T1). Zonder versie: van vóór de versies. */
 export const BEKENDE_VERSIES = Object.freeze([1, 2]);
@@ -44,6 +44,8 @@ const INSTELLINGEN_ID = "klimop";
 const BLADZIJDE = 1000;
 /** Na zoveel bladzijden stopt het lezen: zoveel uitstappen telt de uitstappentool nooit. */
 const MAX_BLADZIJDEN = 50;
+/** Meer klassen dan dit heeft geen uitstap: de MT neemt zo'n rij niet over (review 2: R2-09). */
+const MAX_KLASSEN = 50;
 
 /**
  * Wat de serverfunctie van elke uitstap leest: enkel wat de databank van de MT nodig heeft (64.3), en
@@ -197,20 +199,37 @@ export const overgenomen = Object.freeze({ SCHEMA, GROEPEN, r2, parseISO, school
  *   id, gewijzigd   het id, en het tijdstip updated_at: de versie van de uitstap in de uitstappentool
  *   versie          de ruwe schemaversie zoals ze er staat; null zonder versie
  *   bekend          begrijpt de MT deze versie? Zo niet, dan leest ze de uitstap niet (T1)
- *   uitstap         de uitstap na norm(), of null bij een onbekende versie
+ *   bruikbaar       kan de MT met de rij rekenen? Een rij waarover de overgenomen code struikelt, of met
+ *                   meer dan vijftig klassen, neemt de MT niet over: iedereen kan in de uitstappentool
+ *                   een aanvraag toevoegen, ook buiten het scherm om, en zo'n rij mag het lezen van de
+ *                   andere nooit doen stoppen (review 2: R13)
+ *   uitstap         de uitstap na norm(); null bij een onbekende versie of een onbruikbare rij
  * norm() krijgt een eigen kopie: het wijzigt ook wat in de uitstap genest zit, zoals de annulering.
+ * Een rij zonder gegevens leest de MT als een uitstap zonder velden, dus zonder datum: dat is ook wat
+ * de korte lezing van zo'n rij geeft (review 2: R2-06).
  */
 export function normaliseer(rij) {
   const trip = rij ? rij.trip : null;
-  const ruw = trip !== null && typeof trip === "object" && !Array.isArray(trip) ? trip : null;
-  const versie = ruw === null || ruw.v === undefined ? null : ruw.v;
-  const bekend = ruw !== null && (versie === null || BEKENDE_VERSIES.includes(versie));
+  const ruw = trip !== null && typeof trip === "object" && !Array.isArray(trip) ? trip : {};
+  const versie = ruw.v === undefined ? null : ruw.v;
+  const bekend = versie === null || BEKENDE_VERSIES.includes(versie);
+  let uitstap = null;
+  if (bekend) {
+    try {
+      uitstap = norm(JSON.parse(JSON.stringify(ruw)));
+      if (!Array.isArray(uitstap.klassen) || uitstap.klassen.length > MAX_KLASSEN) uitstap = null;
+    } catch {
+      // De overgenomen code struikelt over deze rij: de MT slaat ze over, en leest de andere gewoon.
+      uitstap = null;
+    }
+  }
   return {
     id: rij ? rij.id : null,
     gewijzigd: rij ? rij.updated_at : null,
     versie,
     bekend,
-    uitstap: bekend ? norm(JSON.parse(JSON.stringify(ruw))) : null,
+    bruikbaar: uitstap !== null,
+    uitstap,
   };
 }
 
@@ -238,20 +257,22 @@ export function melding(n) {
 
 /**
  * Alles wat naar mt_uitstappen_bijwerken gaat: per uitstap de melding, en de volledige lijst van id's.
- * Een uitstap met een onbekende schemaversie gaat niet mee (T1). Haar id staat wel in de lijst: de MT
- * houdt wat ze wist, en de uitstap geldt niet als "niet gevonden".
+ * Een uitstap met een onbekende schemaversie gaat niet mee (T1), en een onbruikbare rij ook niet. Hun id
+ * staat wel in de lijst: de MT houdt wat ze wist, en de uitstap geldt niet als "niet gevonden".
  */
 export function bericht(rijen) {
   const uitstappen = [];
   const alleIds = [];
   const onbekendeVersie = [];
+  const onbruikbaar = [];
   for (const rij of rijen) {
     const n = normaliseer(rij);
     alleIds.push(n.id);
-    if (n.bekend) uitstappen.push(melding(n));
-    else onbekendeVersie.push(n.id);
+    if (!n.bekend) onbekendeVersie.push(n.id);
+    else if (!n.bruikbaar) onbruikbaar.push(n.id);
+    else uitstappen.push(melding(n));
   }
-  return { uitstappen, alleIds, onbekendeVersie };
+  return { uitstappen, alleIds, onbekendeVersie, onbruikbaar };
 }
 
 // ---------- T1, stap 5: kiezen ----------
@@ -273,15 +294,20 @@ export function soortVan(t) {
 /**
  * De uitstappen geteld, per schooljaar: wat de pagina toont om na te kijken wat de MT leest.
  * Geeft { jaren: [{ schooljaar, bevestigd, aangevraagd, geannuleerd }], nascholingen, verwijderd,
- * zonderDatum, onbekendeVersie }. Het schooljaar volgt uit de startdatum, zoals in de uitstappentool.
+ * zonderDatum, onbekendeVersie, onbruikbaar }. Het schooljaar volgt uit de startdatum, zoals in de
+ * uitstappentool.
  */
 export function overzicht(rijen) {
   const perJaar = new Map();
-  const uit = { jaren: [], nascholingen: 0, verwijderd: 0, zonderDatum: 0, onbekendeVersie: 0 };
+  const uit = { jaren: [], nascholingen: 0, verwijderd: 0, zonderDatum: 0, onbekendeVersie: 0, onbruikbaar: 0 };
   for (const rij of rijen) {
     const n = normaliseer(rij);
     if (!n.bekend) {
       uit.onbekendeVersie++;
+      continue;
+    }
+    if (!n.bruikbaar) {
+      uit.onbruikbaar++;
       continue;
     }
     const soort = soortVan(n.uitstap);
@@ -402,15 +428,22 @@ function totaalUit(bereik) {
   return m ? Number(m[1]) : null;
 }
 
-/** Eén lezing van alle bladzijden: { rijen }, of { reden } als ze mislukt of niet volledig is. */
+/**
+ * Eén lezing van alle bladzijden: { rijen }, of { reden } als ze mislukt of niet volledig is.
+ * Elke bladzijde gaat verder vanaf de laatste id van de vorige ("id groter dan"), niet vanaf een aantal
+ * rijen: verdwijnt er intussen een rij en komt er een bij, dan verschuift er niets, en een rij die er
+ * heel de tijd stond, valt nooit weg (review 2: R05, R2-04). Het totaal bij elke bladzijde zegt hoeveel
+ * rijen er vanaf daar nog zijn: zo weet de MT of er nog een bladzijde volgt, wat de databank ook als
+ * grootste bladzijde toelaat.
+ */
 async function leesEenKeer(haal, bron, vraag) {
   const rijen = [];
-  let totaal = null;
+  let laatste = null;
   for (let blad = 0; blad < MAX_BLADZIJDEN; blad++) {
     let antwoord;
     let gegevens;
     try {
-      antwoord = await haal(bron.url + "/rest/v1/" + vraag + "&limit=" + BLADZIJDE + "&offset=" + rijen.length, {
+      antwoord = await haal(bron.url + "/rest/v1/" + vraag + "&order=id.asc&limit=" + BLADZIJDE + (laatste === null ? "" : "&id=gt." + encodeURIComponent(laatste)), {
         method: "GET",
         // De publishable key gaat enkel mee als apikey, nooit als toegangsbewijs (design system 1.13).
         headers: { apikey: bron.sleutel, Accept: "application/json", Prefer: "count=exact" },
@@ -420,23 +453,22 @@ async function leesEenKeer(haal, bron, vraag) {
     } catch {
       return { reden: "verbinding" };
     }
-    // 416: de bladzijde begint voorbij het einde. De lijst werd dus korter terwijl de MT las.
-    if (antwoord.status === 416) return { reden: "onvolledig" };
     if (!antwoord.ok) return { reden: antwoord.status === 401 || antwoord.status === 403 ? "geweigerd" : "fout", status: antwoord.status };
     if (!Array.isArray(gegevens)) return { reden: "fout", status: antwoord.status };
-    // Elke bladzijde meldt het totaal. Wijzigt het onderweg, dan verschoven de bladzijden: geen lijst.
-    const nu = totaalUit(antwoord.headers.get("content-range"));
-    if (nu === null || (totaal !== null && nu !== totaal)) return { reden: "onvolledig" };
-    totaal = nu;
+    // Hoeveel rijen er vanaf hier nog zijn, deze bladzijde inbegrepen. Zonder dat getal is er geen lijst.
+    const over = totaalUit(antwoord.headers.get("content-range"));
+    if (over === null || gegevens.length > over) return { reden: "onvolledig" };
     for (const rij of gegevens) {
       if (rij === null || typeof rij !== "object") return { reden: "fout", status: antwoord.status };
       rijen.push(rij);
     }
-    if (rijen.length >= totaal) break;
-    if (gegevens.length === 0) return { reden: "onvolledig" };
+    if (gegevens.length === over) return { rijen };
+    // Er volgt nog een bladzijde: verder vanaf de laatste id. Zonder een nieuwe id komt de MT niet vooruit.
+    const id = gegevens.length ? gegevens[gegevens.length - 1].id : null;
+    if (typeof id !== "string" || id === "" || id === laatste) return { reden: "onvolledig" };
+    laatste = id;
   }
-  if (rijen.length !== totaal) return { reden: "onvolledig" };
-  return { rijen };
+  return { reden: "onvolledig" };
 }
 
 /**
@@ -446,12 +478,12 @@ async function leesEenKeer(haal, bron, vraag) {
  *   "verbinding"   geen antwoord
  *   "geweigerd"    de uitstappentool weigert de sleutel
  *   "fout"         een ander antwoord dan een lijst
- *   "onvolledig"   het aantal rijen klopt niet met het totaal, ook niet bij een tweede lezing
+ *   "onvolledig"   het totaal ontbreekt of een bladzijde klopt niet, ook niet bij een tweede lezing
  * Een fout is nooit een lege lijst.
  */
 async function leesAlles(haal, bron, vraag) {
   let uit = await leesEenKeer(haal, bron, vraag);
-  // Wijzigde er iets terwijl de MT las, dan leest ze één keer opnieuw.
+  // Klopte een bladzijde niet, dan leest de MT één keer opnieuw.
   if (uit.reden === "onvolledig") uit = await leesEenKeer(haal, bron, vraag);
   if (uit.reden) return { ok: false, reden: uit.reden, status: uit.status || 0 };
   return { ok: true, rijen: uit.rijen };
@@ -474,7 +506,7 @@ function metEigenId(rijen) {
  */
 export async function leesUitstappenKort(haal, bron) {
   const kolommen = ["id", "updated_at", ...VELDEN_KORT.map((veld) => veld + ":trip->" + veld)];
-  const uit = await leesAlles(haal, bron, TABEL_UITSTAPPEN + "?select=" + kolommen.join(",") + "&order=id.asc");
+  const uit = await leesAlles(haal, bron, TABEL_UITSTAPPEN + "?select=" + kolommen.join(","));
   if (!uit.ok) return uit;
   if (!metEigenId(uit.rijen)) return { ok: false, reden: "onvolledig", status: 0 };
   return {
@@ -493,9 +525,11 @@ export async function leesUitstappenKort(haal, bron) {
  */
 export async function leesUitstappen(haal, bron, schooljaar) {
   if (!/^\d{4}-\d{4}$/.test(String(schooljaar))) return { ok: false, reden: "fout", status: 0 };
-  const uit = await leesAlles(haal, bron, TABEL_UITSTAPPEN + "?select=id,nr,schooljaar,trip,updated_at&schooljaar=eq." + schooljaar + "&order=nr.asc,id.asc");
+  const uit = await leesAlles(haal, bron, TABEL_UITSTAPPEN + "?select=id,nr,schooljaar,trip,updated_at&schooljaar=eq." + schooljaar);
   if (!uit.ok) return uit;
   if (!metEigenId(uit.rijen)) return { ok: false, reden: "onvolledig", status: 0 };
+  // Gelezen op id; getoond op nummer, zoals in de uitstappentool.
+  uit.rijen.sort((a, b) => (Number(a.nr) || 0) - (Number(b.nr) || 0) || (a.id < b.id ? -1 : 1));
   return uit;
 }
 
@@ -505,7 +539,7 @@ export async function leesUitstappen(haal, bron, schooljaar) {
  * een lege klassenlijst is een fout, geen resultaat.
  */
 export async function leesKlassen(haal, bron) {
-  const uit = await leesAlles(haal, bron, TABEL_INSTELLINGEN + "?select=data&id=eq." + INSTELLINGEN_ID + "&order=id.asc");
+  const uit = await leesAlles(haal, bron, TABEL_INSTELLINGEN + "?select=data&id=eq." + INSTELLINGEN_ID);
   if (!uit.ok) return uit;
   const klassen = uit.rijen.length === 1 ? klassenUit(uit.rijen[0].data) : [];
   if (!klassen.length) return { ok: false, reden: "leeg", status: 0 };

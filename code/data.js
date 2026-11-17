@@ -1,4 +1,4 @@
-// MT · data.js · versie 0.7.1
+// MT · data.js · versie 0.8.0
 // De verbinding met de eigen databank (17.1, 17.8). De schermen praten enkel via dit bestand met
 // Supabase (regel 3). De publishable key gaat enkel als apikey mee; Authorization enkel met het
 // toegangsbewijs van een aangemelde gebruiker (design system 1.13).
@@ -6,13 +6,13 @@
 // fout erbij, zodat een scherm weet wat er scheelt zonder de tekst te lezen (64.4).
 // Sinds stap 2b: tabellen lezen met paginering (17.8), en de regel dat "geen rechten" nooit "geen
 // gegevens" betekent (17.3).
-// Sinds stap 3: de serverfunctie voor de uitstappen (B212), en het netwerk waarmee adapter.js de
-// uitstappentool leest om te tonen. Daar gaat enkel de publishable key van de uitstappentool heen.
+// Sinds stap 3: de serverfunctie voor de uitstappen (B212). Sinds 0.8.0 leest enkel die serverfunctie de
+// uitstappentool: de pagina maakt zelf geen verbinding meer met dat project (review 2).
+// Sinds 0.8.0 leest de MT een tabel op haar sleutel, bladzijde na bladzijde, en sorteert ze in de browser.
 
-import { leesUitstappenKort } from "./adapter.js";
-import { ACCOUNTFUNCTIE, UITSTAPFUNCTIE, UITSTAPPENTOOL } from "./config.js";
+import { ACCOUNTFUNCTIE, UITSTAPFUNCTIE } from "./config.js";
 
-export const VERSIE = "0.7.1";
+export const VERSIE = "0.8.0";
 
 /** Zoals de REST-laag van de andere tools: na 12 seconden zonder antwoord is het een fout. */
 const WACHTTIJD = 12000;
@@ -119,11 +119,12 @@ export async function ping() {
 //   oproep      een oproep die niet klopt: een fout in de pagina (22023)
 //   ontbreekt   de functie bestaat niet: een script of de serverfunctie ontbreekt
 //   bron        de uitstappentool antwoordde niet, of niet volledig: er is niets gewijzigd
+//   ingehaald   een nieuwere lezing van de uitstappentool nam het over: er is niets gewijzigd
 //   verbinding  geen antwoord
 //   fout        al de rest
 
 const SOORT_PER_CODE = { "42501": "rechten", MT409: "gewijzigd", MT422: "kan_niet", MT429: "te_veel", "22023": "oproep" };
-const SOORTEN = new Set(["sessie", "rechten", "gewijzigd", "kan_niet", "te_veel", "oproep", "bron"]);
+const SOORTEN = new Set(["sessie", "rechten", "gewijzigd", "kan_niet", "te_veel", "oproep", "bron", "ingehaald"]);
 const TEKST = {
   sessie: "Je sessie is verlopen. Meld opnieuw aan.",
   rechten: "Je hebt geen rechten voor deze handeling.",
@@ -179,7 +180,8 @@ async function roepFunctie(naam, lichaam) {
   if (antwoord.status === 0) return mislukt("verbinding", null, 0);
   if (antwoord.status === 404) return mislukt("ontbreekt", "De serverfunctie " + naam + " staat nog niet in Supabase.", 404);
   // onbekend: Supabase gaf geen antwoord, dus de wijziging kan toch gebeurd zijn (review 1, I2).
-  const extra = { geblokkeerd: g.geblokkeerd === true, onbekend: g.onbekend === true };
+  // deels: de serverfunctie brak af terwijl een deel al bewaard is of bewaard kan zijn (review 2: R07).
+  const extra = { geblokkeerd: g.geblokkeerd === true, onbekend: g.onbekend === true, deels: g.deels === true };
   if (typeof g.code === "string" && typeof g.melding === "string") {
     return mislukt(SOORTEN.has(g.code) ? g.code : "fout", g.melding, antwoord.status, extra);
   }
@@ -196,49 +198,12 @@ export function serverfunctie(actie, invoer = {}) {
 /**
  * Vraagt de serverfunctie voor de uitstappen om de uitstappentool te lezen en de MT bij te werken
  * (B212). De pagina geeft niets mee: de functie leest de bron zelf. Het antwoord zegt wat ze las en wat
- * de databank ermee deed.
+ * de databank ermee deed, met het overzicht per schooljaar: de pagina leest de uitstappentool zelf niet.
+ * Las de MT minder dan een halve minuut geleden, of leest ze op dit moment al, dan komt de uitkomst van
+ * die lezing terug (stand "recent" of "bezig").
  */
 export function uitstappenBijwerken() {
   return roepFunctie(UITSTAPFUNCTIE, { actie: "bijwerken" });
-}
-
-// ---------- De uitstappentool lezen, om te tonen (adapter.js, T1) ----------
-
-/**
- * Het netwerk voor adapter.js: zoals de eigen databank, met dezelfde grens in de tijd. De adapter
- * bepaalt de vraag en de kop; daar staat enkel de publishable key van de uitstappentool in, als apikey.
- */
-async function haalBron(adres, opties) {
-  const stopper = new AbortController();
-  const klok = setTimeout(() => stopper.abort(), WACHTTIJD);
-  try {
-    const antwoord = await fetch(adres, { ...opties, cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer", signal: stopper.signal });
-    if (!antwoord.ok) clearTimeout(klok);
-    return {
-      ok: antwoord.ok,
-      status: antwoord.status,
-      headers: antwoord.headers,
-      // De grens in de tijd geldt tot het hele antwoord gelezen is.
-      text: async () => {
-        try {
-          return await antwoord.text();
-        } finally {
-          clearTimeout(klok);
-        }
-      },
-    };
-  } catch (fout) {
-    clearTimeout(klok);
-    throw fout;
-  }
-}
-
-/**
- * Wat de uitstappentool nu zegt, kort: van elke uitstap enkel wat de MT ervan bijhoudt. Geeft
- * { ok: true, rijen } of { ok: false, reden }; een fout is nooit een lege lijst (T1).
- */
-export function leesUitstappentool() {
-  return leesUitstappenKort(haalBron, UITSTAPPENTOOL);
 }
 
 // ---------- Tabellen lezen (17.8) ----------
@@ -261,17 +226,60 @@ export function totaalUit(bereik) {
   return m ? Number(m[1]) : null;
 }
 
-/** Eén lezing van alle bladzijden. Geeft { rijen, totaal, bladzijden }, of { fout } met het antwoord voor het scherm. */
-async function leesBladzijden(tabel, vraag) {
+const ONVOLLEDIG = "De MT kon deze lijst niet volledig lezen. Probeer het opnieuw.";
+
+/** De taal waarin de MT sorteert: zoals een Nederlandstalige lijst, met 4A vóór 10A. */
+const TAAL = new Intl.Collator("nl", { numeric: true });
+
+/** Twee waarden in oplopende volgorde, zoals de databank: leeg achteraan, nee vóór ja, getallen als getallen. */
+function vergelijk(a, b) {
+  if (a === b) return 0;
+  if (a === null || a === undefined) return 1;
+  if (b === null || b === undefined) return -1;
+  if (typeof a === "number" && typeof b === "number") return a < b ? -1 : 1;
+  if (typeof a === "boolean" && typeof b === "boolean") return a ? 1 : -1;
+  const x = String(a);
+  const y = String(b);
+  return TAAL.compare(x, y) || (x < y ? -1 : x > y ? 1 : 0);
+}
+
+/**
+ * Sorteert rijen op de kolommen van volgorde, zonder de lijst zelf te wijzigen. De rijen komen binnen op
+ * hun sleutel: wat voor de volgorde gelijk is, houdt die plaats.
+ */
+export function sorteer(rijen, volgorde) {
+  return [...rijen].sort((a, b) => {
+    for (const kolom of volgorde) {
+      const v = vergelijk(a[kolom], b[kolom]);
+      if (v !== 0) return v;
+    }
+    return 0;
+  });
+}
+
+/**
+ * Eén lezing van alle bladzijden, op de sleutel van de tabel. Geeft { rijen, bladzijden }, { fout } met
+ * het antwoord voor het scherm, of { onvolledig: true }.
+ * Elke bladzijde gaat verder vanaf de sleutel van de laatste rij, niet vanaf een aantal rijen: komt er
+ * intussen een rij bij of valt er een weg, dan verschuift er niets, en een rij die er heel de tijd stond,
+ * valt nooit weg (review 2: R06, zoals adapter.js de uitstappentool leest). Bij elke bladzijde zegt de
+ * databank hoeveel rijen er vanaf daar nog zijn: zonder dat getal is er geen lijst.
+ * Heeft de sleutel meer dan één kolom, dan gaat de volgende bladzijde verder vanaf de eerste kolom, met
+ * die waarde inbegrepen; wat al gelezen is, valt weg. De rijen met dezelfde eerste kolom moeten dan samen
+ * op één bladzijde passen.
+ */
+async function leesBladzijden(tabel, vraag, sleutel) {
   const rijen = [];
-  let totaal = null;
+  const gezien = new Set();
+  const eerste = sleutel[0];
+  let laatste = null;
   for (let blad = 0; blad < MAX_BLADZIJDEN; blad++) {
     // Het toegangsbewijs per bladzijde: een lange lijst leest zo nooit met een bewijs dat intussen verliep.
     const token = await tokenBron();
     if (!token) return { fout: mislukt("sessie", null, 0) };
-    // De eerste bladzijde vraagt ook het totaal: zo valt op dat een latere bladzijde ontbreekt (review 1, I6).
-    const antwoord = await roep("/rest/v1/" + tabel + "?" + vraag.join("&") + "&limit=" + BLADZIJDE + "&offset=" + blad * BLADZIJDE,
-      { token, extra: blad === 0 ? { Prefer: "count=exact" } : null });
+    const verder = laatste === null ? "" : "&" + eerste + "=" + (sleutel.length === 1 ? "gt." : "gte.") + encodeURIComponent(String(laatste));
+    const antwoord = await roep("/rest/v1/" + tabel + "?" + vraag.join("&") + "&order=" + sleutel.map((kolom) => kolom + ".asc").join(",") + "&limit=" + BLADZIJDE + verder,
+      { token, extra: { Prefer: "count=exact" } });
     if (!antwoord.ok || !Array.isArray(antwoord.gegevens)) {
       if (antwoord.status === 0) return { fout: mislukt("verbinding", null, 0) };
       if (antwoord.status === 401) return { fout: mislukt("sessie", null, 401) };
@@ -282,9 +290,28 @@ async function leesBladzijden(tabel, vraag) {
       if (code === "42703" || code === "42P01") return { fout: mislukt("ontbreekt", "De databank is nog niet bijgewerkt: het laatste SQL-script is nog niet uitgevoerd.", antwoord.status) };
       return { fout: mislukt("fout", null, antwoord.status) };
     }
-    if (blad === 0) totaal = totaalUit(antwoord.bereik);
-    rijen.push(...antwoord.gegevens);
-    if (antwoord.gegevens.length < BLADZIJDE) return { rijen, totaal, bladzijden: blad + 1 };
+    // Hoeveel rijen er vanaf hier nog zijn, deze bladzijde inbegrepen.
+    const over = totaalUit(antwoord.bereik);
+    if (over === null || antwoord.gegevens.length > over) return { onvolledig: true };
+    let nieuw = 0;
+    for (const rij of antwoord.gegevens) {
+      if (rij === null || typeof rij !== "object") return { onvolledig: true };
+      const waarden = sleutel.map((kolom) => rij[kolom]);
+      if (waarden.some((waarde) => waarde === null || waarde === undefined)) return { onvolledig: true };
+      const eigen = JSON.stringify(waarden);
+      if (gezien.has(eigen)) {
+        // Met één sleutelkolom komt geen rij twee keer: dan is de lijst niet te vertrouwen.
+        if (sleutel.length === 1) return { onvolledig: true };
+        continue;
+      }
+      gezien.add(eigen);
+      rijen.push(rij);
+      nieuw++;
+    }
+    if (antwoord.gegevens.length === over) return { rijen, bladzijden: blad + 1 };
+    // Er volgt nog een bladzijde. Zonder een nieuwe rij komt de MT niet vooruit.
+    if (nieuw === 0) return { onvolledig: true };
+    laatste = antwoord.gegevens[antwoord.gegevens.length - 1][eerste];
   }
   return { fout: mislukt("fout", "Deze lijst is te lang om in één keer te lezen.", 0) };
 }
@@ -293,19 +320,24 @@ async function leesBladzijden(tabel, vraag) {
  * Leest rijen uit een tabel van de MT, als wie aangemeld is. RLS beslist wat terugkomt.
  *   kolommen  de kolommen: ["id", "naam"]
  *   waar      { kolom: waarde } is gelijk aan; { kolom: [a, b] } is één van; { kolom: null } is leeg
- *   volgorde  ["naam", "id"]: verplicht, en eindigend op wat uniek is; anders verspringen de bladzijden
+ *   volgorde  ["naam", "id"]: de volgorde waarin het scherm de rijen krijgt. De MT sorteert in de browser
+ *   sleutel   wat een rij uniek maakt: standaard ["id"]. De MT leest op die sleutel
  *   rol       de rol die het scherm eist, bv. "beheerder" of ["beheerder", "lezer"]: wie die rol niet
  *             meer heeft, krijgt geen lijst
- * Een lijst is pas een lijst als ze volledig is (17.3, review 1: I6):
+ * Een lijst is pas een lijst als ze volledig is (17.3; review 1: I6; review 2: R06):
+ *   - bij elke bladzijde moet de databank zeggen hoeveel rijen er nog zijn, en geen rij komt twee keer.
+ *     Klopt een bladzijde niet, dan leest de MT één keer opnieuw; blijft het zo, dan is er geen lijst;
+ *   - eist het scherm een rol, dan kijkt de MT na elke lezing na of wie aangemeld is die rol nog heeft:
+ *     zonder die rol toont de databank minder, en dat is geen korte lijst;
  *   - komt er niets terug, of telde de lijst meer dan één bladzijde, dan kijkt de MT na of de aanmelding
- *     nog in orde is, en of de rol nog klopt: zonder rechten toont de databank ook niets, en dat is
- *     geen lege of korte lijst;
- *   - het aantal rijen moet het totaal zijn dat de databank bij de eerste bladzijde meldde. Verschilt
- *     het, dan leest de MT één keer opnieuw; blijft het verschillen, dan is er geen lijst.
+ *     nog in orde is: zonder rechten toont de databank ook niets, en dat is geen lege lijst.
  */
-export async function lees(tabel, { kolommen, waar = {}, volgorde, rol = null }) {
-  const namen = [tabel, ...kolommen, ...Object.keys(waar), ...volgorde];
-  if (!namen.every((n) => NAAM.test(n)) || !kolommen.length || !volgorde.length) return mislukt("oproep", null, 0);
+export async function lees(tabel, { kolommen, waar = {}, volgorde, sleutel = ["id"], rol = null }) {
+  const sleutels = Array.isArray(sleutel) ? sleutel : [sleutel];
+  const namen = [tabel, ...kolommen, ...Object.keys(waar), ...volgorde, ...sleutels];
+  if (!namen.every((n) => NAAM.test(n)) || !kolommen.length || !volgorde.length || !sleutels.length) return mislukt("oproep", null, 0);
+  // De MT leest op de sleutel en sorteert zelf: beide moeten bij de gevraagde kolommen zijn.
+  if (![...sleutels, ...volgorde].every((kolom) => kolommen.includes(kolom))) return mislukt("oproep", null, 0);
   const vraag = ["select=" + kolommen.join(",")];
   for (const [kolom, w] of Object.entries(waar)) {
     if (w === null) vraag.push(kolom + "=is.null");
@@ -314,22 +346,17 @@ export async function lees(tabel, { kolommen, waar = {}, volgorde, rol = null })
       vraag.push(kolom + "=in.(" + encodeURIComponent(w.map(inLijst).join(",")) + ")");
     } else vraag.push(kolom + "=eq." + encodeURIComponent(String(w)));
   }
-  vraag.push("order=" + volgorde.map((kolom) => kolom + ".asc").join(","));
 
-  let uit = await leesBladzijden(tabel, vraag);
+  let uit = await leesBladzijden(tabel, vraag, sleutels);
+  // Klopte een bladzijde niet, dan leest de MT één keer opnieuw.
+  if (uit.onvolledig) uit = await leesBladzijden(tabel, vraag, sleutels);
   if (uit.fout) return uit.fout;
-  let volledig = uit.totaal === null || uit.rijen.length === uit.totaal;
-  if (!volledig) {
-    uit = await leesBladzijden(tabel, vraag);
-    if (uit.fout) return uit.fout;
-    volledig = uit.totaal === null || uit.rijen.length === uit.totaal;
-  }
-  if (uit.rijen.length === 0 || uit.bladzijden > 1 || !volledig) {
+  if (uit.onvolledig || rol !== null || uit.rijen.length === 0 || uit.bladzijden > 1) {
     const nog = await rpc("mt_mijn_account");
     if (!nog.ok) return nog;
     const rollen = rol === null ? null : Array.isArray(rol) ? rol : [rol];
     if (rollen && !rollen.includes(nog.gegevens && nog.gegevens.rol)) return mislukt("rechten", null, 403);
   }
-  if (!volledig) return mislukt("fout", "De lijst wijzigde terwijl de MT ze las. Probeer het opnieuw.", 0);
-  return { ok: true, gegevens: uit.rijen };
+  if (uit.onvolledig) return mislukt("fout", ONVOLLEDIG, 0);
+  return { ok: true, gegevens: sorteer(uit.rijen, volgorde) };
 }

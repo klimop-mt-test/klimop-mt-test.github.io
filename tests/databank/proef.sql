@@ -589,8 +589,55 @@ language sql stable as $$
     'klassen', to_jsonb(p_klassen))
 $$;
 -- De uitstappen bijwerken doet sinds 005 enkel de serverfunctie die de uitstappentool zelf leest (B212).
+-- Sinds 006 per lezing, met een volgnummer (review 2). In de proef volgen de lezingen elkaar meteen op:
+-- proef.tijd_verder() doet alsof er twee minuten voorbij zijn, zodat de dertig seconden rust niet meespelen.
+create function proef.tijd_verder() returns void language sql as $$
+  update mt_intern.lezingen set begonnen_op = begonnen_op - interval '2 minutes', klaar_op = klaar_op - interval '2 minutes'
+$$;
+create function proef.start_lezing() returns bigint language plpgsql as $$
+begin
+  perform proef.tijd_verder();
+  return (proef.srv('select public.mt_lezing_start(null)') ->> 'lezing')::bigint;
+end $$;
+create function proef.deel(p_lezing bigint, p_uitstappen jsonb, p_alle text[] default null, p_uitkomst jsonb default null) returns jsonb language sql as $$
+  select proef.srv(format('select public.mt_uitstappen_bijwerken(%L, %L, %L, %L)', p_lezing, p_uitstappen, p_alle,
+                          case when p_alle is null then p_uitkomst else coalesce(p_uitkomst, '{}'::jsonb) end))
+$$;
+-- Eén lezing met één deel. Zonder lijst van id's stopt ze daarna, zoals een lezing die halverwege strandt.
+create function proef.lezing(p_uitstappen jsonb, p_alle text[] default null) returns jsonb language plpgsql as $$
+declare
+  v_n bigint := proef.start_lezing();
+  v_r jsonb := proef.deel(v_n, p_uitstappen, p_alle);
+begin
+  if p_alle is null or v_r ? 'fout' then
+    perform proef.srv(format('select public.mt_lezing_stop(%L, %L)', v_n, 'proef'));
+  end if;
+  return v_r;
+end $$;
 create function proef.lees(p_uitstap jsonb, p_alle text[] default null) returns jsonb language sql as $$
-  select proef.srv(format('select public.mt_uitstappen_bijwerken(%L, %L)', jsonb_build_array(p_uitstap), p_alle))
+  select proef.lezing(jsonb_build_array(p_uitstap), p_alle)
+$$;
+-- Een lezing die ingehaald is: ze kreeg haar nummer, maar een nieuwere startte voor ze haar deel doorgaf.
+create function proef.ingehaald(p_uitstap jsonb, p_alle text[] default null) returns jsonb language plpgsql as $$
+declare
+  v_oud bigint := proef.start_lezing();
+  v_nieuw bigint := proef.start_lezing();
+  v_r jsonb := proef.deel(v_oud, jsonb_build_array(p_uitstap), p_alle);
+begin
+  perform proef.srv(format('select public.mt_lezing_stop(%L, %L)', v_nieuw, 'proef'));
+  return v_r;
+end $$;
+-- Alle id's die de MT kent, zonder de opgegeven: de volledige lijst van een lezing waarin enkel die ontbreken.
+create function proef.alle_ids(p_zonder text[] default '{}') returns text[] language sql stable as $$
+  select coalesce(array_agg(a.uitstap_id order by a.uitstap_id), '{}'::text[]) from public.activiteiten a
+   where a.soort = 'uitstap' and a.uitstap_id <> all (p_zonder)
+$$;
+create function proef.stand_van(p_uitstap text) returns text language sql stable as $$
+  select a.bron_stand from public.activiteiten a where a.uitstap_id = p_uitstap
+$$;
+create function proef.tussenkomst(p_uitstap text) returns void language sql as $$
+  insert into public.tussenkomsten (activiteit_id, schooljaar, wie, onderdeel, basis, bedrag_cent)
+  select a.id, a.schooljaar, 'Proef', 'activiteit', 'totaal', 100 from public.activiteiten a where a.uitstap_id = p_uitstap
 $$;
 create function proef.totaal(a uuid, k uuid, p_veld text) returns integer language sql as $$
   with t as (select proef.json(format('select public.mt_lijst_totalen(%L)', (select schooljaar from public.activiteiten where id = a))) as j)
@@ -655,7 +702,7 @@ select proef.zeker('functies: een uitgeschakeld account bereikt niets', proef.js
 select proef.aangemeld(proef.id(5));
 select proef.zeker('functies: een lezer schrijft ook via een functie niets',
   proef.status(proef.id(301), proef.id(101), proef.id(202), 'Briefje ouders') ->> 'fout' = '42501'
-  and proef.json(format('select public.mt_uitstappen_bijwerken(%L, null)', '[]'::jsonb)) ->> 'fout' = '42501'
+  and proef.json(format('select public.mt_uitstappen_bijwerken(1, %L, null, null)', '[]'::jsonb)) ->> 'fout' = '42501'
   and proef.json(format('select public.mt_bevestigen(%L, %L, 0, null)', proef.id(301), proef.id(101))) ->> 'fout' = '42501');
 
 -- ---------- 6. Aanwezigheden (7, T2) ----------
@@ -968,8 +1015,8 @@ select proef.zeker('uitstappen: de datum en de versie zijn die van de uitstappen
   (select datum_start = proef.d(21) and bron_gewijzigd_op = '2026-01-02T10:00:00Z'::timestamptz from public.activiteiten where id = proef.act('u-n1')));
 select proef.zeker('uitstappen: een afwezigheid op de dag zelf',
   proef.status(proef.act('u-n1'), proef.id(101), proef.id(201), 'Attest') ->> 'revisie' = '2');
-select proef.zeker('uitstappen: een oudere melding wordt overgeslagen (B212)',
-  proef.lees(proef.uitstap('u-n1', '2026-01-01T12:00:00Z', proef.d(25), array['4A'])) @> '{"ouder": 1}'::jsonb);
+select proef.zeker('uitstappen: een lezing die ingehaald is door een nieuwere, wijzigt niets meer (B212; review 2: R03, R2-08)',
+  proef.ingehaald(proef.uitstap('u-n1', '2026-01-01T12:00:00Z', proef.d(25), array['4A'])) ->> 'fout' = 'MT409');
 select proef.zeker('uitstappen: ze draait de datum, de versie en de klassen niet terug',
   (select datum_start = proef.d(21) and bron_gewijzigd_op = '2026-01-02T10:00:00Z'::timestamptz from public.activiteiten where id = proef.act('u-n1'))
   and (select count(*) = 2 from public.klaslijsten where activiteit_id = proef.act('u-n1')));
@@ -1052,16 +1099,16 @@ select proef.zeker('uitstappen: de datum van toen blijft',
 
 select proef.aangemeld(proef.id(3));
 select proef.zeker('uitstappen: de browser meldt niets meer: een leerkracht bereikt de functie niet (B212)',
-  proef.json(format('select public.mt_uitstappen_bijwerken(%L, null)', '[]'::jsonb)) ->> 'fout' = '42501'
-  and proef.json(format('select mt_intern.uitstappen_bijwerken(%L, null)', '[]'::jsonb)) ->> 'fout' = '42501');
+  proef.json(format('select public.mt_uitstappen_bijwerken(1, %L, null, null)', '[]'::jsonb)) ->> 'fout' = '42501'
+  and proef.json(format('select mt_intern.uitstappen_bijwerken(1, %L, null, null)', '[]'::jsonb)) ->> 'fout' = '42501');
 select proef.aangemeld(proef.id(1));
 select proef.zeker('uitstappen: ook een beheerder niet (B212)',
-  proef.json(format('select public.mt_uitstappen_bijwerken(%L, null)', '[]'::jsonb)) ->> 'fout' = '42501'
-  and proef.json(format('select mt_intern.uitstappen_bijwerken(%L, null)', '[]'::jsonb)) ->> 'fout' = '42501');
+  proef.json(format('select public.mt_uitstappen_bijwerken(1, %L, null, null)', '[]'::jsonb)) ->> 'fout' = '42501'
+  and proef.json(format('select mt_intern.uitstappen_bijwerken(1, %L, null, null)', '[]'::jsonb)) ->> 'fout' = '42501');
 select proef.zeker('uitstappen: een lege uitstappentool is een fout, geen resultaat (17.3)',
-  proef.srv(format('select public.mt_uitstappen_bijwerken(%L, %L)', '[]'::jsonb, '{}'::text[])) ->> 'fout' = 'MT422');
+  proef.lezing('[]'::jsonb, '{}'::text[]) ->> 'fout' = 'MT422');
 select proef.zeker('uitstappen: wat de uitstappentool niet meer kent, is "niet gevonden"',
-  proef.srv(format('select public.mt_uitstappen_bijwerken(%L, %L)', '[]'::jsonb, array['uproef301', 'u-n1', 'u-vast'])) ->> 'niet_gevonden' = '1');
+  proef.lezing('[]'::jsonb, array['uproef301', 'u-n1', 'u-vast']) ->> 'niet_gevonden' = '1');
 select proef.zeker('uitstappen: enkel in een schooljaar dat open is, en met een taak als er iets aan hing',
   (select bron_stand = 'niet_gevonden' from public.activiteiten where id = proef.id(311))
   and (select bron_stand = 'actief' from public.activiteiten where id = proef.id(321))
@@ -2187,6 +2234,302 @@ select proef.zeker('regels: elke soort leesregel heeft een tabel met rijen om op
 select proef.zeker('regels: een beheerder, een leerkracht zonder klassen en een lezer lezen elk precies wat hun soort regel zegt (O3)',
   not exists (select 1 from proef_gelezen g where g.gezien is distinct from g.verwacht),
   (select string_agg(g.tabel || ' als ' || g.rol || ': ' || g.gezien || ' in plaats van ' || g.verwacht, '; ') from proef_gelezen g where g.gezien is distinct from g.verwacht));
+
+-- ---------- Review 2: de lezingen, de rem en de taak die terugkomt (script 006) ----------
+-- Wat een handeling teruggaf: de controles lezen het in de volgende opdracht.
+create table proef.gedaan (naam text primary key, antwoord jsonb);
+create function proef.doe(p_naam text, p_antwoord jsonb) returns void language sql as $$
+  insert into proef.gedaan values (p_naam, p_antwoord) on conflict (naam) do update set antwoord = excluded.antwoord
+$$;
+create function proef.uit(p_naam text) returns jsonb language sql stable as $$ select antwoord from proef.gedaan where naam = p_naam $$;
+-- Een dag in het lopende schooljaar, en een uitstap zonder klassen: zo raken deze controles geen lijsten.
+create function proef.open_dag() returns date language sql stable as $$
+  select make_date(left(s.schooljaar, 4)::integer, 10, 15) from public.schooljaren s where s.stand = 'lopend'
+$$;
+create function proef.r2(p_id text, p_gewijzigd text default '2026-03-01T10:00:00Z', p_verwijderd boolean default false,
+                         p_klassen text[] default '{}') returns jsonb language sql stable as $$
+  select proef.uitstap(p_id, p_gewijzigd, proef.open_dag(), p_klassen, 'bevestigd', null, p_verwijderd)
+$$;
+create function proef.reeks(p_begin text, p_aantal integer) returns jsonb language sql stable as $$
+  select jsonb_agg(proef.r2(p_begin || i) order by i) from generate_series(1, p_aantal) as i
+$$;
+create function proef.namen(p_begin text, p_aantal integer) returns text[] language sql immutable as $$
+  select array_agg(p_begin || i order by i) from generate_series(1, p_aantal) as i
+$$;
+create function proef.laatste_lezing() returns bigint language sql stable as $$ select max(nummer) from mt_intern.lezingen $$;
+create function proef.start() returns jsonb language sql as $$ select proef.srv('select public.mt_lezing_start(null)') $$;
+create function proef.stop(p_lezing bigint, p_reden text default null) returns jsonb language sql as $$
+  select proef.srv(format('select public.mt_lezing_stop(%L, %L)', p_lezing, p_reden))
+$$;
+create function proef.bevestig_rem(p_taak uuid, p_aantal integer) returns jsonb language sql as $$
+  select proef.json(format('select public.mt_verdwenen_bevestigen(%L, %L)', p_taak, p_aantal))
+$$;
+
+-- Wie een lezing start.
+select proef.aangemeld(proef.id(3));
+select proef.zeker('lezingen: een leerkracht start of stopt zelf geen lezing',
+  proef.json('select public.mt_lezing_start(null)') ->> 'fout' = '42501'
+  and proef.json('select public.mt_lezing_stop(1, null)') ->> 'fout' = '42501'
+  and proef.json('select mt_intern.lezing_start(null)') ->> 'fout' = '42501'
+  and proef.json('select mt_intern.lezing_stop(1, null)') ->> 'fout' = '42501');
+select proef.aangemeld(proef.id(1));
+select proef.zeker('lezingen: ook een beheerder niet',
+  proef.json('select public.mt_lezing_start(null)') ->> 'fout' = '42501'
+  and proef.json('select public.mt_lezing_stop(1, null)') ->> 'fout' = '42501');
+select proef.zeker('lezingen: niemand leest de tabel van de lezingen via de Data API',
+  proef.fout('select 1 from mt_intern.lezingen') is not null
+  and proef.fout('select 1 from mt_intern.lezingen', 'service_role') is not null);
+
+-- Eén lezing tegelijk, en hoogstens één per dertig seconden (R09, R2-10).
+select proef.tijd_verder();
+select proef.doe('start1', proef.srv(format('select public.mt_lezing_start(%L)', proef.id(3))));
+select proef.zeker('lezingen: de serverfunctie krijgt een volgnummer vóór ze leest, en de databank noteert wie ze startte',
+  proef.uit('start1') ->> 'wat' = 'nieuw'
+  and (proef.uit('start1') ->> 'lezing')::bigint = proef.laatste_lezing()
+  and (select stand = 'bezig' and door = proef.id(3) from mt_intern.lezingen where nummer = proef.laatste_lezing()));
+select proef.doe('start2', proef.start());
+select proef.zeker('lezingen: zolang ze bezig is, start er geen tweede',
+  proef.uit('start2') ->> 'wat' = 'bezig'
+  and (select count(*) from mt_intern.lezingen where stand = 'bezig') = 1);
+select proef.doe('stop1', proef.stop(proef.laatste_lezing(), 'de uitstappentool antwoordt niet'));
+select proef.zeker('lezingen: een lezing die strandt, meldt dat',
+  proef.uit('stop1') ->> 'afgebroken' = 'true'
+  and (select stand = 'afgebroken' and reden = 'de uitstappentool antwoordt niet' from mt_intern.lezingen where nummer = proef.laatste_lezing()));
+select proef.doe('start3', proef.start());
+select proef.zeker('lezingen: en maakt meteen plaats voor de volgende',
+  proef.uit('start3') ->> 'wat' = 'nieuw');
+select proef.doe('deel1', proef.deel(proef.laatste_lezing(), jsonb_build_array(proef.r2('u-r2-a'))));
+select proef.doe('deel2', proef.deel(proef.laatste_lezing(), '[]'::jsonb));
+select proef.zeker('lezingen: een deel zonder de lijst van id''s sluit niets af',
+  proef.uit('deel1') @> '{"nieuw": 1, "niet_gevonden": 0}'::jsonb
+  and not (proef.uit('deel1') ? 'uitkomst')
+  and not (proef.uit('deel2') ? 'uitkomst')
+  and (select stand = 'bezig' from mt_intern.lezingen where nummer = proef.laatste_lezing()));
+select proef.zeker('lezingen: een uitkomst hoort bij het laatste deel, en een deel hoort bij een lezing',
+  proef.srv(format('select public.mt_uitstappen_bijwerken(%L, %L, null, %L)', proef.laatste_lezing(), '[]'::jsonb, '{}'::jsonb)) ->> 'fout' = '22023'
+  and proef.srv(format('select public.mt_uitstappen_bijwerken(null, %L, null, null)', '[]'::jsonb)) ->> 'fout' = '22023'
+  and proef.srv(format('select public.mt_uitstappen_bijwerken(%L, %L, null, null)', proef.laatste_lezing() + 1000, '[]'::jsonb)) ->> 'fout' = 'MT409');
+select proef.doe('slot', proef.deel(proef.laatste_lezing(), jsonb_build_array(proef.r2('u-r2-b')), proef.alle_ids() || array['u-r2-b'], '{"versie": "proef"}'::jsonb));
+select proef.zeker('lezingen: het laatste deel sluit af, met de tellingen van alle delen en wat de serverfunctie meegaf',
+  proef.uit('slot') @> '{"nieuw": 1, "uitkomst": {"versie": "proef", "uitstappen": {"nieuw": 2, "niet_gevonden": 0, "tegengehouden": 0}}}'::jsonb
+  and (select stand = 'klaar' and uitkomst ->> 'versie' = 'proef' and uitkomst ? 'klaar_op' and uitkomst ? 'duur_ms' and (uitkomst ->> 'lezing')::bigint = nummer
+         from mt_intern.lezingen where nummer = proef.laatste_lezing()));
+select proef.doe('start4', proef.start());
+select proef.zeker('lezingen: wie binnen de dertig seconden vraagt, krijgt de uitkomst van die lezing, zonder nieuwe lezing',
+  proef.uit('start4') @> '{"wat": "recent", "uitkomst": {"versie": "proef"}}'::jsonb
+  and (select stand = 'klaar' from mt_intern.lezingen where nummer = proef.laatste_lezing()));
+select proef.doe('na', proef.deel(proef.laatste_lezing(), jsonb_build_array(proef.r2('u-r2-c'))));
+select proef.zeker('lezingen: een afgesloten lezing wijzigt niets meer',
+  proef.uit('na') ->> 'fout' = 'MT409'
+  and proef.stand_van('u-r2-c') is null);
+select proef.tijd_verder();
+select proef.doe('start5', proef.start());
+select proef.zeker('lezingen: na de rust start een nieuwe lezing',
+  proef.uit('start5') ->> 'wat' = 'nieuw');
+select proef.tijd_verder();
+select proef.doe('start6', proef.start());
+select proef.zeker('lezingen: een lezing die langer dan een minuut bezig bleef, is afgebroken zodra een nieuwe start',
+  proef.uit('start6') ->> 'wat' = 'nieuw'
+  and (select count(*) from mt_intern.lezingen where stand = 'bezig') = 1
+  and (select stand = 'afgebroken' from mt_intern.lezingen where nummer = (proef.uit('start5') ->> 'lezing')::bigint));
+select proef.doe('oud', proef.deel((proef.uit('start5') ->> 'lezing')::bigint, jsonb_build_array(proef.r2('u-r2-c'))));
+select proef.zeker('lezingen: haar deel komt te laat: er wijzigt niets',
+  proef.uit('oud') ->> 'fout' = 'MT409'
+  and proef.stand_van('u-r2-c') is null);
+select proef.doe('stop6', proef.stop(proef.laatste_lezing()));
+select proef.doe('stopklaar', proef.stop((select max(nummer) from mt_intern.lezingen where stand = 'klaar')));
+select proef.zeker('lezingen: een afgesloten lezing stoppen doet niets',
+  proef.uit('stopklaar') ->> 'afgebroken' = 'false'
+  and (select stand = 'klaar' from mt_intern.lezingen where nummer = (select max(nummer) from mt_intern.lezingen where klaar_op is not null)));
+do $$
+begin
+  insert into mt_intern.lezingen default values;
+  insert into mt_intern.lezingen default values;
+  perform proef.doe('tweebezig', '"geen fout"'::jsonb);
+exception when unique_violation then
+  perform proef.doe('tweebezig', '"23505"'::jsonb);
+end $$;
+select proef.zeker('lezingen: de databank laat er nooit twee tegelijk bezig zijn',
+  proef.uit('tweebezig') = '"23505"'::jsonb
+  and (select count(*) from mt_intern.lezingen where stand = 'bezig') = 0);
+
+-- Een ingehaalde lezing (R03, R2-08).
+select proef.doe('nieuw', proef.lees(proef.r2('u-r2-nieuw'), proef.alle_ids() || array['u-r2-nieuw']));
+select proef.zeker('lezingen: een nieuwere lezing maakt een uitstap aan',
+  proef.uit('nieuw') @> '{"nieuw": 1}'::jsonb
+  and proef.stand_van('u-r2-nieuw') = 'actief');
+select proef.doe('r03', proef.ingehaald(proef.r2('u-r2-a'), proef.alle_ids(array['u-r2-nieuw'])));
+select proef.zeker('lezingen: de lijst van id''s van een ingehaalde lezing maakt die uitstap niet "niet gevonden" (R03)',
+  proef.uit('r03') ->> 'fout' = 'MT409'
+  and proef.stand_van('u-r2-nieuw') = 'actief');
+select proef.doe('verdwijnt', proef.lezing('[]'::jsonb, proef.alle_ids(array['u-r2-nieuw'])));
+select proef.zeker('lezingen: een uitstap verdwijnt uit de uitstappentool',
+  proef.uit('verdwijnt') ->> 'niet_gevonden' = '1'
+  and proef.stand_van('u-r2-nieuw') = 'niet_gevonden');
+select proef.doe('r208', proef.ingehaald(proef.r2('u-r2-nieuw'), proef.alle_ids()));
+select proef.zeker('lezingen: een ingehaalde lezing die haar nog zag, zet haar niet weer actief (R2-08)',
+  proef.uit('r208') ->> 'fout' = 'MT409'
+  and proef.stand_van('u-r2-nieuw') = 'niet_gevonden');
+
+-- De versie die de MT las (R04).
+select proef.doe('weg1', proef.lees(proef.r2('u-r2-weg', '2026-03-01T10:00:00Z')));
+select proef.doe('weg2', proef.lees(proef.r2('u-r2-weg', '2026-03-02T10:00:00Z', true)));
+select proef.zeker('versie: een uitstap, daarna verwijderd',
+  proef.uit('weg1') @> '{"nieuw": 1}'::jsonb
+  and proef.uit('weg2') @> '{"weg": 1}'::jsonb);
+select proef.doe('weg4', proef.lees(proef.r2('u-r2-weg', '2026-03-04T10:00:00Z', true)));
+select proef.zeker('versie: dezelfde verwijderde stand in een nieuwere versie: de MT onthoudt de versie die ze las (R04)',
+  proef.uit('weg4') @> '{"ongewijzigd": 1}'::jsonb
+  and (select bron_stand = 'verwijderd' and bron_gewijzigd_op = '2026-03-04T10:00:00Z'::timestamptz from public.activiteiten where uitstap_id = 'u-r2-weg'));
+select proef.doe('weg3', proef.lees(proef.r2('u-r2-weg', '2026-03-03T10:00:00Z')));
+select proef.zeker('versie: wat de nieuwste lezing zegt, geldt, ook met een ouder tijdstip, bv. na een teruggezette reservekopie',
+  proef.uit('weg3') @> '{"gewijzigd": 1}'::jsonb
+  and (select bron_stand = 'actief' and bron_gewijzigd_op = '2026-03-03T10:00:00Z'::timestamptz from public.activiteiten where uitstap_id = 'u-r2-weg'));
+select proef.doe('veel', proef.lees(proef.r2('u-r2-veel', '2026-03-01T10:00:00Z', false, proef.namen('K', 51))));
+select proef.doe('vijftig', proef.lees(proef.r2('u-r2-vijftig', '2026-03-01T10:00:00Z', false, proef.namen('K', 50))));
+select proef.zeker('versie: een uitstap met meer dan vijftig klassen is ongeldig; met vijftig niet',
+  proef.uit('veel') @> '{"ongeldig": 1}'::jsonb
+  and proef.stand_van('u-r2-veel') is null
+  and proef.uit('vijftig') @> '{"nieuw": 1}'::jsonb);
+
+-- Een onbekende klas, met het schooljaar van de uitstap (R07).
+select proef.doe('onb1', proef.lees(proef.r2('u-r2-onb', '2026-03-01T10:00:00Z', false, array['Maanklas'])));
+select proef.zeker('klas onbekend: de melding zegt in welk schooljaar de klas onbekend is',
+  proef.uit('onb1') @> '{"nieuw": 1}'::jsonb
+  and proef.uit('onb1') -> 'onbekende_klassen' = jsonb_build_array(jsonb_build_object('uitstap', 'u-r2-onb', 'schooljaar', (select schooljaar from public.schooljaren where stand = 'lopend'), 'klassen', jsonb_build_array('Maanklas'))));
+select proef.doe('onb2', proef.lees(proef.r2('u-r2-onb', '2026-03-01T10:00:00Z', false, array['Maanklas'])));
+select proef.zeker('klas onbekend: ook bij een uitstap die de MT al kende',
+  proef.uit('onb2') @> '{"ongewijzigd": 1}'::jsonb
+  and proef.uit('onb2') -> 'onbekende_klassen' = jsonb_build_array(jsonb_build_object('uitstap', 'u-r2-onb', 'schooljaar', (select schooljaar from public.schooljaren where stand = 'lopend'), 'klassen', jsonb_build_array('Maanklas'))));
+select proef.doe('onb3', proef.lees(proef.uitstap('u-r2-oud', '2026-03-01T10:00:00Z', make_date(left((select max(schooljaar) from public.schooljaren where stand = 'voorbij'), 4)::integer, 10, 15), array['Maanklas'])));
+select proef.zeker('klas onbekend: bij een uitstap van een voorbij schooljaar staat dat schooljaar erbij',
+  proef.uit('onb3') @> '{"nieuw": 1}'::jsonb
+  and proef.uit('onb3') -> 'onbekende_klassen' = jsonb_build_array(jsonb_build_object('uitstap', 'u-r2-oud', 'schooljaar', (select max(schooljaar) from public.schooljaren where stand = 'voorbij'), 'klassen', jsonb_build_array('Maanklas')))
+  and (select max(schooljaar) from public.schooljaren where stand = 'voorbij') <> (select schooljaar from public.schooljaren where stand = 'lopend'));
+select proef.doe('onb4', proef.lees(proef.uitstap('u-r2-oud', '2026-03-02T10:00:00Z', proef.open_dag(), array['Maanklas'])));
+select proef.zeker('klas onbekend: verhuist de uitstap naar een ander schooljaar, dan staat het nieuwe schooljaar erbij',
+  proef.uit('onb4') @> '{"gewijzigd": 1}'::jsonb
+  and proef.uit('onb4') -> 'onbekende_klassen' = jsonb_build_array(jsonb_build_object('uitstap', 'u-r2-oud', 'schooljaar', (select schooljaar from public.schooljaren where stand = 'lopend'), 'klassen', jsonb_build_array('Maanklas')))
+  and (select schooljaar = (select schooljaar from public.schooljaren where stand = 'lopend') from public.activiteiten where uitstap_id = 'u-r2-oud'));
+
+-- De taak "niet gevonden" komt terug (R2-07).
+select proef.doe('taak0', proef.lees(proef.r2('u-r2-taak'), proef.alle_ids() || array['u-r2-taak']));
+select proef.tussenkomst('u-r2-taak');
+select proef.doe('taak1', proef.lezing('[]'::jsonb, proef.alle_ids(array['u-r2-taak'])));
+select proef.zeker('taak: een uitstap met een tussenkomst verdwijnt: "niet gevonden", met een taak',
+  proef.uit('taak0') @> '{"nieuw": 1}'::jsonb
+  and proef.uit('taak1') ->> 'niet_gevonden' = '1'
+  and (select count(*) from public.taken where activiteit_id = proef.act('u-r2-taak') and soort = 'uitstap_weg' and stand = 'open') = 1);
+select proef.doe('taak2', proef.lees(proef.r2('u-r2-taak'), proef.alle_ids()));
+select proef.zeker('taak: ze komt terug: weer actief, en de taak is afgehandeld',
+  proef.uit('taak2') @> '{"gewijzigd": 1}'::jsonb
+  and proef.stand_van('u-r2-taak') = 'actief'
+  and (select count(*) from public.taken where activiteit_id = proef.act('u-r2-taak') and soort = 'uitstap_weg' and stand = 'open') = 0);
+select proef.doe('taak3', proef.lezing('[]'::jsonb, proef.alle_ids(array['u-r2-taak'])));
+select proef.zeker('taak: ze verdwijnt opnieuw: er komt opnieuw een taak (R2-07)',
+  proef.uit('taak3') ->> 'niet_gevonden' = '1'
+  and (select count(*) from public.taken where activiteit_id = proef.act('u-r2-taak') and soort = 'uitstap_weg' and stand = 'open') = 1
+  and (select count(*) from public.taken where activiteit_id = proef.act('u-r2-taak') and soort = 'uitstap_weg') = 2);
+
+-- De rem (B225, R2-05).
+select proef.doe('vijf0', proef.lezing(proef.reeks('u-r2-vijf', 5), proef.alle_ids() || proef.namen('u-r2-vijf', 5)));
+select proef.doe('vijf1', proef.lezing('[]'::jsonb, proef.alle_ids(proef.namen('u-r2-vijf', 5))));
+select proef.zeker('rem: verdwijnen er vijf, dan neemt de MT dat over',
+  proef.uit('vijf0') @> '{"nieuw": 5}'::jsonb
+  and proef.uit('vijf1') @> '{"niet_gevonden": 5, "tegengehouden": 0}'::jsonb
+  and (select count(*) from public.activiteiten where uitstap_id like 'u-r2-vijf%' and bron_stand = 'niet_gevonden') = 5
+  and (select count(*) from public.taken where soort = 'veel_verdwenen') = 0
+  and (proef.uit('vijf1') #> '{uitkomst,verdwenen}') = '[]'::jsonb);
+select proef.doe('rem0', proef.lezing(proef.reeks('u-r2-rem', 7), proef.alle_ids() || proef.namen('u-r2-rem', 7)));
+select proef.tussenkomst('u-r2-rem1');
+select proef.doe('remklas', proef.lees(proef.r2('u-r2-rem2', '2026-03-02T10:00:00Z', false, array[(select k.naam from public.klassen k where k.schooljaar = (select schooljaar from public.schooljaren where stand = 'lopend') and k.actief order by k.naam limit 1)])));
+select proef.doe('remklas3', proef.lees(proef.r2('u-r2-rem3', '2026-03-02T10:00:00Z', false, array[(select k.naam from public.klassen k where k.schooljaar = (select schooljaar from public.schooljaren where stand = 'lopend') and k.actief order by k.naam limit 1)])));
+update public.klaslijsten set vervallen = true where activiteit_id = proef.act('u-r2-rem3');
+select proef.doe('rem1', proef.lezing('[]'::jsonb, proef.alle_ids(proef.namen('u-r2-rem', 7))));
+select proef.zeker('rem: verdwijnen er zeven tegelijk, dan neemt de MT dat niet over',
+  proef.uit('rem0') @> '{"nieuw": 7}'::jsonb
+  and proef.uit('rem1') @> '{"niet_gevonden": 0, "tegengehouden": 7}'::jsonb
+  and (select count(*) from public.activiteiten where uitstap_id like 'u-r2-rem%' and bron_stand = 'actief') = 7);
+select proef.zeker('rem: er is één taak, met de zeven uitstappen, en de uitkomst van de lezing noemt ze',
+  (select count(*) = 1 and bool_and(jsonb_array_length(gegevens -> 'uitstappen') = 7) from public.taken where soort = 'veel_verdwenen' and stand = 'open')
+  and (proef.uit('rem1') #>> '{uitkomst,uitstappen,tegengehouden}') = '7'
+  and (proef.uit('rem1') #>> '{uitkomst,verdwenen_taak}')::uuid = (select id from public.taken where soort = 'veel_verdwenen' and stand = 'open'));
+select proef.zeker('rem: de uitkomst zegt welke het zijn: de datum en de klassen, op datum',
+  proef.uit('remklas') @> '{"gewijzigd": 1, "onbekende_klassen": []}'::jsonb
+  and jsonb_array_length(proef.uit('rem1') #> '{uitkomst,verdwenen}') = 7
+  and (proef.uit('rem1') #> '{uitkomst,verdwenen,0}') = jsonb_build_object('uitstap', 'u-r2-rem1', 'van', proef.open_dag(), 'tot', proef.open_dag(), 'klassen', '[]'::jsonb)
+  and (proef.uit('rem1') #> '{uitkomst,verdwenen,1}') = jsonb_build_object('uitstap', 'u-r2-rem2', 'van', proef.open_dag(), 'tot', proef.open_dag(), 'klassen', jsonb_build_array((select k.naam from public.klassen k where k.schooljaar = (select schooljaar from public.schooljaren where stand = 'lopend') and k.actief order by k.naam limit 1)))
+  and (proef.uit('rem1') #>> '{uitkomst,verdwenen,6,uitstap}') = 'u-r2-rem7');
+select proef.zeker('rem: een klas die er intussen af is, staat er niet bij',
+  (select count(*) from public.klaslijsten where activiteit_id = proef.act('u-r2-rem3') and vervallen) = 1
+  and (proef.uit('rem1') #> '{uitkomst,verdwenen,2}') = jsonb_build_object('uitstap', 'u-r2-rem3', 'van', proef.open_dag(), 'tot', proef.open_dag(), 'klassen', '[]'::jsonb));
+select proef.doe('rem2', proef.lezing('[]'::jsonb, proef.alle_ids(proef.namen('u-r2-rem', 6))));
+select proef.zeker('rem: een volgende lezing die er nog zes mist, maakt geen tweede taak, en de taak noemt de zes van nu',
+  proef.uit('rem2') @> '{"tegengehouden": 6}'::jsonb
+  and (select count(*) from public.taken where soort = 'veel_verdwenen') = 1
+  and (select jsonb_array_length(gegevens -> 'uitstappen') = 6 from public.taken where soort = 'veel_verdwenen'));
+select proef.doe('rem3', proef.lezing('[]'::jsonb, proef.alle_ids(proef.namen('u-r2-rem', 7))));
+select proef.aangemeld(proef.id(3));
+select proef.zeker('rem: een leerkracht bevestigt niet',
+  proef.bevestig_rem((select id from public.taken where soort = 'veel_verdwenen' and stand = 'open'), 7) ->> 'fout' = '42501');
+select proef.aangemeld(proef.id(5));
+select proef.zeker('rem: een lezer ook niet',
+  proef.bevestig_rem((select id from public.taken where soort = 'veel_verdwenen' and stand = 'open'), 7) ->> 'fout' = '42501');
+select proef.aangemeld(proef.id(1));
+select proef.doe('fout6', proef.bevestig_rem((select id from public.taken where soort = 'veel_verdwenen' and stand = 'open'), 6));
+select proef.zeker('rem: de beheerder bevestigt enkel het aantal dat het scherm toonde',
+  proef.uit('fout6') ->> 'fout' = 'MT409'
+  and (select count(*) from public.activiteiten where uitstap_id like 'u-r2-rem%' and bron_stand = 'actief') = 7);
+select proef.zeker('rem: een andere taak is niet te bevestigen als de rem',
+  proef.bevestig_rem((select id from public.taken where soort = 'uitstap_weg' and stand = 'open' limit 1), 1) ->> 'fout' = 'MT422');
+insert into proef.gedaan values ('remtaak', to_jsonb((select id from public.taken where soort = 'veel_verdwenen' and stand = 'open')));
+select proef.doe('echtweg', proef.bevestig_rem((select id from public.taken where soort = 'veel_verdwenen' and stand = 'open'), 7));
+select proef.zeker('rem: "Ze zijn echt weg": de zeven tellen niet meer mee',
+  proef.uit('echtweg') ->> 'niet_gevonden' = '7'
+  and (select count(*) from public.activiteiten where uitstap_id like 'u-r2-rem%' and bron_stand = 'niet_gevonden') = 7);
+select proef.zeker('rem: met een taak waar al iets aan hing, en de taak van de rem is afgehandeld',
+  (select count(*) from public.taken where activiteit_id = proef.act('u-r2-rem1') and soort = 'uitstap_weg' and stand = 'open') = 1
+  and (select count(*) from public.taken where activiteit_id = proef.act('u-r2-rem2')) = 0
+  and (select stand = 'afgehandeld' and afhandeling = 'bevestigd' and afgehandeld_door = proef.id(1) from public.taken where soort = 'veel_verdwenen'));
+select proef.zeker('rem: twee keer bevestigen kan niet',
+  proef.bevestig_rem((proef.uit('remtaak') #>> '{}')::uuid, 7) ->> 'fout' = 'MT409');
+select proef.doe('meteen', proef.start());
+select proef.zeker('rem: wat de laatste lezing toonde, klopt niet meer: de volgende vraag leest meteen opnieuw',
+  proef.uit('meteen') ->> 'wat' = 'nieuw');
+select proef.doe('stop7', proef.stop(proef.laatste_lezing()));
+select proef.doe('terug0', proef.lezing(proef.reeks('u-r2-terug', 6), proef.alle_ids() || proef.namen('u-r2-terug', 6)));
+select proef.doe('terug1', proef.lezing('[]'::jsonb, proef.alle_ids(proef.namen('u-r2-terug', 6))));
+select proef.zeker('rem: zes uitstappen verdwijnen: tegengehouden, met een taak',
+  proef.uit('terug0') @> '{"nieuw": 6}'::jsonb
+  and proef.uit('terug1') @> '{"tegengehouden": 6}'::jsonb
+  and (select count(*) from public.taken where soort = 'veel_verdwenen' and stand = 'open') = 1);
+select proef.doe('terug2', proef.lezing(proef.reeks('u-r2-terug', 6), proef.alle_ids()));
+select proef.zeker('rem: staan ze er bij de volgende lezing weer, dan is de taak vanzelf opgelost, en tellen de zes gewoon mee',
+  proef.uit('terug2') @> '{"ongewijzigd": 6, "tegengehouden": 0}'::jsonb
+  and (select count(*) from public.taken where soort = 'veel_verdwenen' and stand = 'open') = 0
+  and (select count(*) from public.taken where soort = 'veel_verdwenen' and afhandeling = 'hersteld') = 1
+  and (select count(*) from public.activiteiten where uitstap_id like 'u-r2-terug%' and bron_stand = 'actief') = 6);
+select proef.doe('terug3', proef.lezing(jsonb_build_array(proef.r2('u-r2-terug1', '2026-03-05T10:00:00Z', true), proef.r2('u-r2-terug2', '2026-03-05T10:00:00Z', true)), proef.alle_ids()));
+select proef.doe('terug4', proef.lezing('[]'::jsonb, proef.alle_ids(proef.namen('u-r2-terug', 6))));
+select proef.zeker('rem: wat al niet meer meetelde, telt niet mee voor de rem',
+  proef.uit('terug3') @> '{"weg": 2}'::jsonb
+  and proef.uit('terug4') @> '{"niet_gevonden": 6, "tegengehouden": 0}'::jsonb);
+select proef.doe('lang0', proef.lezing(proef.reeks('u-r2-lang', 55), proef.alle_ids() || proef.namen('u-r2-lang', 55)));
+select proef.doe('langvroeg', proef.lees(proef.uitstap('u-r2-lang9', '2026-03-02T10:00:00Z', proef.open_dag() - 30, '{}'::text[])));
+select proef.doe('lang1', proef.lezing('[]'::jsonb, proef.alle_ids(proef.namen('u-r2-lang', 55))));
+select proef.zeker('rem: van heel veel verdwenen uitstappen noemt de uitkomst de eerste vijftig, op datum; het aantal blijft juist',
+  proef.uit('lang0') @> '{"nieuw": 55}'::jsonb
+  and proef.uit('langvroeg') @> '{"gewijzigd": 1}'::jsonb
+  and proef.uit('lang1') @> '{"tegengehouden": 55, "niet_gevonden": 0}'::jsonb
+  and jsonb_array_length(proef.uit('lang1') #> '{uitkomst,verdwenen}') = 50
+  and (proef.uit('lang1') #> '{uitkomst,verdwenen,0}') = jsonb_build_object('uitstap', 'u-r2-lang9', 'van', proef.open_dag() - 30, 'tot', proef.open_dag() - 30, 'klassen', '[]'::jsonb)
+  and (proef.uit('lang1') #>> '{uitkomst,verdwenen,1,uitstap}') = 'u-r2-lang1'
+  and (proef.uit('lang1') #>> '{uitkomst,verdwenen,49,uitstap}') = 'u-r2-lang53');
+select proef.doe('lang2', proef.lezing(proef.reeks('u-r2-lang', 55), proef.alle_ids()));
+select proef.zeker('rem: staan ook die er weer, dan is de taak opgelost en noemt de uitkomst niets meer',
+  proef.uit('lang2') @> '{"ongewijzigd": 54, "gewijzigd": 1, "tegengehouden": 0}'::jsonb
+  and (proef.uit('lang2') #> '{uitkomst,verdwenen}') = '[]'::jsonb
+  and (select count(*) from public.taken where soort = 'veel_verdwenen' and stand = 'open') = 0);
 
 -- ---------- De uitslag ----------
 

@@ -1,4 +1,4 @@
-// MT · aanmelden.js · versie 0.7.1
+// MT · aanmelden.js · versie 0.8.0
 // Het aanmeldscherm (17.2, canvas: bord "Aanmelden met tweestapsverificatie"). De eerste keer vier
 // stappen: tijdelijk wachtwoord, eigen wachtwoord kiezen, app koppelen, code. Daarna twee: wachtwoord
 // en code. Welke stap volgt, beslist dit scherm niet zelf: het vraagt de stand van het account aan de
@@ -12,7 +12,7 @@ import * as data from "./data.js";
 import { ACCOUNTFUNCTIE, ACCOUNTFUNCTIE_VERSIE, MAILVOORBEELD } from "./config.js";
 import { html, zet } from "./ui.js";
 
-export const VERSIE = "0.7.1";
+export const VERSIE = "0.8.0";
 
 // ---------- Welke stap volgt ----------
 
@@ -419,8 +419,8 @@ export function start({ kaart, appNaam, bericht = null, afmelden }) {
         // intussen uit, dan verhuist de onthouden sessie naar dit tabblad (review 1, I5).
         const instellingen = account.gegevens.instellingen;
         if (auth.blijft() && instellingen && instellingen.aangemeld_blijven === false) {
+          // naarTab() zet zelf het tijdstip van de laatste activiteit (review 2: R2-16).
           auth.naarTab();
-          auth.raak();
           z.nietBlijven = true;
         }
         return klaar({ account: account.gegevens, niveau: n, nietBlijven: z.nietBlijven === true });
